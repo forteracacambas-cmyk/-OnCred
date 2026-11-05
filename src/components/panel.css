@@ -1,0 +1,253 @@
+.attendant-panel {
+  min-height: 100vh;
+  background: #0b1220;
+  color: #e2e8f0;
+  padding: 32px 20px;
+  font-family: "Plus Jakarta Sans", sans-serif;
+}
+.panel-wrap {
+  max-width: 1240px;
+  margin: auto;
+}
+.panel-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 20px;
+  margin-bottom: 28px;
+}
+.panel-brand {
+  font-weight: 800;
+  color: white;
+  letter-spacing: 0.08em;
+}
+.panel-brand span {
+  color: #60a5fa;
+}
+.attendant-panel h1 {
+  font-size: 28px;
+  font-weight: 750;
+  margin: 12px 0 5px;
+}
+.attendant-panel h2 {
+  font-size: 18px;
+  font-weight: 700;
+  margin: 0 0 12px;
+}
+.attendant-panel p {
+  color: #a7b6c9;
+  font-size: 13px;
+  line-height: 1.65;
+  margin: 8px 0 16px;
+}
+.panel-card {
+  background: #131f32;
+  border: 1px solid #2c3b52;
+  border-radius: 16px;
+  padding: 24px;
+  margin-bottom: 20px;
+}
+.panel-login {
+  max-width: 430px;
+  margin: 70px auto;
+}
+.attendant-panel label {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 13px;
+  flex: 1;
+  min-width: 150px;
+}
+.panel-field-hint {
+  font-size: 11px;
+  color: #94a3b8;
+  line-height: 1.4;
+  margin-top: 2px;
+}
+.attendant-panel input {
+  background: #0b1526;
+  border: 1px solid #3a4a65;
+  border-radius: 9px;
+  padding: 11px;
+  color: white;
+  width: 100%;
+}
+.attendant-panel button {
+  border: 1px solid #3a4a65;
+  border-radius: 9px;
+  padding: 10px 15px;
+  cursor: pointer;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.attendant-panel button:hover {
+  background: #263a58;
+}
+.attendant-panel button:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+.attendant-panel button.primary {
+  background: #2563eb;
+  color: white;
+  border-color: #2563eb;
+}
+.panel-login button {
+  margin-top: 18px;
+  width: 100%;
+}
+.panel-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+}
+.panel-row h2 {
+  margin: auto auto auto 0;
+}
+.panel-row button {
+  align-self: flex-end;
+}
+.panel-metrics {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 12px;
+}
+.panel-metrics .metric {
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  white-space: normal;
+}
+.metric strong {
+  font-size: 32px;
+  color: white;
+}
+.metric small {
+  font-size: 10px;
+  color: #91a5c0;
+}
+.metric.selected {
+  border-color: #60a5fa;
+  background: #172b4b;
+}
+.panel-table {
+  overflow: auto;
+  margin: 20px 0;
+}
+.panel-table table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.panel-table th {
+  text-align: left;
+  color: #9eb1cc;
+  font-size: 11px;
+  text-transform: uppercase;
+  padding: 13px 10px;
+  border-bottom: 1px solid #34445c;
+}
+.panel-table td {
+  padding: 15px 10px;
+  border-bottom: 1px solid #25344b;
+}
+.panel-table small {
+  display: block;
+  margin-top: 5px;
+  color: #9aacc4;
+}
+.panel-actions {
+  display: flex;
+  gap: 6px;
+}
+.panel-actions button {
+  padding: 7px 10px;
+  font-size: 12px;
+}
+.attendant-panel .panel-note {
+  font-size: 11px;
+  color: #94a8c1;
+}
+.panel-header-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.panel-section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  margin-bottom: 12px;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.panel-section-header h2 {
+  margin: 0;
+  font-size: 17px;
+}
+.panel-section-header p {
+  margin: 3px 0 0;
+  font-size: 12px;
+  color: #94a3b8;
+}
+.active {
+  color: #6ee7b7;
+}
+.paused {
+  color: #fcd34d;
+}
+.danger {
+  color: #fda4af;
+}
+.attendant-panel button.danger {
+  color: #fca5a5;
+  background: #2a1215;
+  border-color: #5c1d24;
+}
+.attendant-panel button.danger:hover:not(:disabled) {
+  background: #42161b;
+  border-color: #881e28;
+  color: #fecaca;
+}
+.panel-alert,
+.panel-success {
+  padding: 16px;
+  border-radius: 10px;
+  margin-bottom: 20px;
+  font-size: 14px;
+}
+.panel-alert {
+  background: #4a1725;
+  color: #fecdd3;
+}
+.panel-success {
+  background: #0c3b34;
+  color: #a7f3d0;
+}
+@media (max-width: 800px) {
+  .panel-metrics {
+    grid-template-columns: repeat(3, 1fr);
+  }
+  .panel-card {
+    padding: 17px;
+  }
+  .attendant-panel {
+    padding: 20px 12px;
+  }
+  .attendant-panel h1 {
+    font-size: 23px;
+  }
+}
+@media (max-width: 420px) {
+  .panel-metrics {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .panel-row label {
+    min-width: 100%;
+    flex-basis: 100%;
+  }
+}

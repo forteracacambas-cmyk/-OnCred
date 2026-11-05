@@ -1,44 +1,57 @@
-import React, { useState } from 'react';
+/**
+ * OnCred - SOLICITAÇÃO DE CRÉDITO
+ * Landing Page de Alta Conversão em Conformidade Regulatória (Bacen / LGPD / TikTok Ads)
+ * Razão Social: OnCred Sociedade de Crédito Direto S.A.
+ * CNPJ: 44.650.156/0001-93
+ */
+
+import React, { useState, useEffect, lazy, Suspense } from 'react';
+import { MeasurementConsent } from './components/MeasurementConsent';
+const AttendantPanel = lazy(() => import('./components/AttendantPanel'));
+const AttendantRedirect = lazy(() => import('./components/AttendantRedirect'));
+export default function App() {
+  if (/^\/painel(?:\/|$)/.test(location.pathname)) return <Suspense fallback={<p>Carregando painel…</p>}><AttendantPanel /></Suspense>;
+  if (/^\/atendente\/?$/.test(location.pathname)) return <Suspense fallback={<p>Conectando ao atendimento…</p>}><AttendantRedirect /></Suspense>;
+  return <Landing />;
+}
 import { Header } from './components/Header';
-import { Hero } from './components/Hero';
-import { CreditSimulator } from './components/CreditSimulator';
-import { CreditLinesGrid } from './components/CreditLinesGrid';
-import { RatesComparison } from './components/RatesComparison';
-import { StepByStep } from './components/StepByStep';
-import { SecurityNotice } from './components/SecurityNotice';
-import { Testimonials } from './components/Testimonials';
+import { SimulatorHero } from './components/SimulatorHero';
+import { HowItWorks } from './components/HowItWorks';
+import { OperationModel } from './components/OperationModel';
+import { FinancialConditions } from './components/FinancialConditions';
+import { Benefits } from './components/Benefits';
+import { AboutSants } from './components/AboutSants';
 import { FAQ } from './components/FAQ';
 import { Footer } from './components/Footer';
-import { ProposalModal } from './components/ProposalModal';
-import { SupportDrawer } from './components/SupportDrawer';
-import { CreditModality, CreditType, SimulationResult } from './types/credit';
-import { CREDIT_MODALITIES } from './data/modalities';
-import { calculatePMT, estimateIOF } from './utils/formatters';
-import { MessageCircle, ArrowUp } from 'lucide-react';
+import { PrivacyPolicyModal } from './components/PrivacyPolicyModal';
+import { TermsOfUseModal } from './components/TermsOfUseModal';
 
-export default function App() {
-  const [isProposalOpen, setIsProposalOpen] = useState(false);
-  const [isSupportOpen, setIsSupportOpen] = useState(false);
+function Landing() {
+  const [isPrivacyOpen, setIsPrivacyOpen] = useState(false);
+  const [isTermsOpen, setIsTermsOpen] = useState(false);
 
-  // Active modality and simulation state
-  const [activeModality, setActiveModality] = useState<CreditModality>(CREDIT_MODALITIES[0]);
-  const [activeSimulation, setActiveSimulation] = useState<SimulationResult>(() => {
-    const mod = CREDIT_MODALITIES[0];
-    const pmt = calculatePMT(mod.defaultAmount, mod.monthlyInterestRate, mod.defaultMonths);
-    const total = pmt * mod.defaultMonths;
-    return {
-      amount: mod.defaultAmount,
-      months: mod.defaultMonths,
-      monthlyRate: mod.monthlyInterestRate,
-      monthlyPayment: pmt,
-      totalPayment: total,
-      totalInterest: total - mod.defaultAmount,
-      annualCet: mod.annualCet,
-      estimatedIof: estimateIOF(mod.defaultAmount, mod.defaultMonths),
-      creditCardComparisonTotal: calculatePMT(mod.defaultAmount, 14.2, 12) * 12,
-      estimatedSavings: 1800,
+  // Detectar rota no pathname ou hash para abrir páginas legais automaticamente
+  useEffect(() => {
+    const handleLocation = () => {
+      const path = window.location.pathname.toLowerCase();
+      const hash = window.location.hash.toLowerCase();
+
+      if (path.includes('politica-de-privacidade') || hash.includes('politica-de-privacidade')) {
+        setIsPrivacyOpen(true);
+      } else if (path.includes('termos-de-uso') || hash.includes('termos-de-uso')) {
+        setIsTermsOpen(true);
+      }
     };
-  });
+
+    handleLocation();
+    window.addEventListener('popstate', handleLocation);
+    window.addEventListener('hashchange', handleLocation);
+
+    return () => {
+      window.removeEventListener('popstate', handleLocation);
+      window.removeEventListener('hashchange', handleLocation);
+    };
+  }, []);
 
   const scrollToSimulator = () => {
     const el = document.getElementById('simulador');
@@ -47,105 +60,73 @@ export default function App() {
     }
   };
 
-  const scrollToModalities = () => {
-    const el = document.getElementById('modalidades');
-    if (el) {
-      el.scrollIntoView({ behavior: 'smooth' });
-    }
-  };
-
-  const handleSelectModalityFromGrid = (type: CreditType) => {
-    const mod = CREDIT_MODALITIES.find((m) => m.id === type) || CREDIT_MODALITIES[0];
-    setActiveModality(mod);
-    const pmt = calculatePMT(mod.defaultAmount, mod.monthlyInterestRate, mod.defaultMonths);
-    const total = pmt * mod.defaultMonths;
-    setActiveSimulation({
-      amount: mod.defaultAmount,
-      months: mod.defaultMonths,
-      monthlyRate: mod.monthlyInterestRate,
-      monthlyPayment: pmt,
-      totalPayment: total,
-      totalInterest: total - mod.defaultAmount,
-      annualCet: mod.annualCet,
-      estimatedIof: estimateIOF(mod.defaultAmount, mod.defaultMonths),
-      creditCardComparisonTotal: calculatePMT(mod.defaultAmount, 14.2, 12) * 12,
-      estimatedSavings: 1800,
-    });
-    scrollToSimulator();
-  };
-
-  const handleStartProposal = (mod: CreditModality, sim: SimulationResult) => {
-    setActiveModality(mod);
-    setActiveSimulation(sim);
-    setIsProposalOpen(true);
-  };
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans flex flex-col selection:bg-emerald-500 selection:text-white">
-      {/* 3-Zone Top Bar */}
+    <div id="topo" className="min-h-screen flex flex-col bg-slate-900 text-slate-800">
+
+      {/* Top Bar Header */}
       <Header
-        onOpenSimulator={scrollToSimulator}
-        onOpenSupport={() => setIsSupportOpen(true)}
+        onScrollToSimulator={scrollToSimulator}
+        onOpenPrivacy={() => setIsPrivacyOpen(true)}
+        onOpenTerms={() => setIsTermsOpen(true)}
       />
 
-      {/* Main Page Sections */}
-      <main className="flex-grow">
-        <Hero
-          onStartSimulation={scrollToSimulator}
-          onExploreModalities={scrollToModalities}
+      {/* Main Content Sections */}
+      <main className="flex-1">
+        {/* Hero Section with Immediate Values Simulator */}
+        <SimulatorHero
+          onOpenPrivacy={() => setIsPrivacyOpen(true)}
         />
 
-        <CreditSimulator
-          onStartProposal={handleStartProposal}
-        />
+        {/* 3-Step Clear Process */}
+        <HowItWorks />
 
-        <CreditLinesGrid
-          onSelectModality={handleSelectModalityFromGrid}
-        />
+        {/* Transparent Operation & Lead Generation Model */}
+        <OperationModel />
 
-        <RatesComparison
-          onOpenSimulator={scrollToSimulator}
-        />
+        {/* Regulatory Credit Conditions & Representative Example */}
+        <FinancialConditions />
 
-        <StepByStep
-          onStartSimulation={scrollToSimulator}
-        />
+        {/* Genuine Fintech Benefits */}
+        <Benefits />
 
-        <SecurityNotice />
+        {/* About OnCred (Authorized by BCB) */}
+        <AboutSants />
 
-        <Testimonials />
-
+        {/* Frequently Asked Questions */}
         <FAQ />
       </main>
 
-      {/* Regulatory Footer */}
-      <Footer />
-
-      {/* Modals & Drawers */}
-      <ProposalModal
-        isOpen={isProposalOpen}
-        onClose={() => setIsProposalOpen(false)}
-        modality={activeModality}
-        simulation={activeSimulation}
+      {/* Complete Legal & Institutional Footer */}
+      <Footer
+        onOpenPrivacy={() => setIsPrivacyOpen(true)}
+        onOpenTerms={() => setIsTermsOpen(true)}
       />
 
-      <SupportDrawer
-        isOpen={isSupportOpen}
-        onClose={() => setIsSupportOpen(false)}
+      <MeasurementConsent />
+      {/* Full Modal Views */}
+      <PrivacyPolicyModal
+        isOpen={isPrivacyOpen}
+        onClose={() => {
+          setIsPrivacyOpen(false);
+          if (window.location.hash.includes('politica-de-privacidade')) {
+            history.pushState(null, '', window.location.pathname);
+          }
+        }}
       />
 
-      {/* Floating Fast Support Button */}
-      <button
-        onClick={() => setIsSupportOpen(true)}
-        className="fixed bottom-6 right-6 z-30 p-3.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-full shadow-xl hover:shadow-2xl transition-all duration-200 active:scale-95 flex items-center justify-center group"
-        aria-label="Falar com especialista"
-        title="Falar com especialista pelo WhatsApp"
-      >
-        <MessageCircle className="w-6 h-6" />
-        <span className="max-w-0 overflow-hidden whitespace-nowrap group-hover:max-w-xs transition-all duration-300 ease-in-out text-xs font-bold pl-0 group-hover:pl-2">
-          Atendimento Rápido
-        </span>
-      </button>
+      <TermsOfUseModal
+        isOpen={isTermsOpen}
+        onClose={() => {
+          setIsTermsOpen(false);
+          if (window.location.hash.includes('termos-de-uso')) {
+            history.pushState(null, '', window.location.pathname);
+          }
+        }}
+      />
+
+
+
     </div>
   );
 }

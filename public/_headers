@@ -1,0 +1,14 @@
+/*
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: SAMEORIGIN
+  Referrer-Policy: strict-origin-when-cross-origin
+
+/painel*
+  X-Robots-Tag: noindex, nofollow
+  Cache-Control: no-store
+/api/*
+  Cache-Control: no-store
+
+/atendente*
+  X-Robots-Tag: noindex, nofollow
+  Cache-Control: no-store
