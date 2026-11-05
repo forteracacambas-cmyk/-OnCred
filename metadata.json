@@ -1,0 +1,8 @@
+{
+  "name": "ValoreCrédito - Soluções Financeiras Inteligentes",
+  "description": "Simule e contrate crédito pessoal, consignado, antecipação FGTS e empréstimo com garantia com aprovação rápida e taxas transparentes.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
