@@ -1,5 +1,1 @@
-{
-  "name": "oncred-captacao",
-  "pages_build_output_dir": "./dist",
-  "compatibility_date": "2026-08-01"
-}
+{"name":"oncred-captacao","pages_build_output_dir":"./dist","compatibility_date":"2026-08-01","d1_databases":[{"binding":"DB","database_name":"oncred-atendimento","database_id":"710f6974-f4e9-474d-85bd-97f8cf7438cb"}]}
