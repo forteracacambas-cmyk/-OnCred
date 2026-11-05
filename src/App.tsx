@@ -1,19 +1,13 @@
 /**
- * OnCred - SOLICITAÇÃO DE CRÉDITO
+ * OnCred - SOLICITAÇÃO DE CRÉDITO INTELIGENTE
  * Landing Page de Alta Conversão em Conformidade Regulatória (Bacen / LGPD / TikTok Ads)
  * Razão Social: OnCred Sociedade de Crédito Direto S.A.
  * CNPJ: 44.650.156/0001-93
+ * Domínio: oncreditsa.online | Telefone: +55 (11) 3042-0181
  */
 
 import React, { useState, useEffect, lazy, Suspense } from 'react';
 import { MeasurementConsent } from './components/MeasurementConsent';
-const AttendantPanel = lazy(() => import('./components/AttendantPanel'));
-const AttendantRedirect = lazy(() => import('./components/AttendantRedirect'));
-export default function App() {
-  if (/^\/painel(?:\/|$)/.test(location.pathname)) return <Suspense fallback={<p>Carregando painel…</p>}><AttendantPanel /></Suspense>;
-  if (/^\/atendente\/?$/.test(location.pathname)) return <Suspense fallback={<p>Conectando ao atendimento…</p>}><AttendantRedirect /></Suspense>;
-  return <Landing />;
-}
 import { Header } from './components/Header';
 import { SimulatorHero } from './components/SimulatorHero';
 import { HowItWorks } from './components/HowItWorks';
@@ -25,6 +19,27 @@ import { FAQ } from './components/FAQ';
 import { Footer } from './components/Footer';
 import { PrivacyPolicyModal } from './components/PrivacyPolicyModal';
 import { TermsOfUseModal } from './components/TermsOfUseModal';
+
+const AttendantPanel = lazy(() => import('./components/AttendantPanel'));
+const AttendantRedirect = lazy(() => import('./components/AttendantRedirect'));
+
+export default function App() {
+  if (/^\/painel(?:\/|$)/.test(location.pathname)) {
+    return (
+      <Suspense fallback={<div className="min-h-screen bg-slate-950 text-white flex items-center justify-center p-6"><p className="font-mono text-sm">Carregando painel de atendimento…</p></div>}>
+        <AttendantPanel />
+      </Suspense>
+    );
+  }
+  if (/^\/atendente\/?$/.test(location.pathname)) {
+    return (
+      <Suspense fallback={<div className="min-h-screen bg-slate-950 text-white flex items-center justify-center p-6"><p className="font-mono text-sm">Conectando ao canal de atendimento…</p></div>}>
+        <AttendantRedirect />
+      </Suspense>
+    );
+  }
+  return <Landing />;
+}
 
 function Landing() {
   const [isPrivacyOpen, setIsPrivacyOpen] = useState(false);
@@ -60,10 +75,8 @@ function Landing() {
     }
   };
 
-
   return (
-    <div id="topo" className="min-h-screen flex flex-col bg-slate-900 text-slate-800">
-
+    <div id="topo" className="min-h-screen flex flex-col bg-slate-950 text-slate-100 font-sans selection:bg-emerald-500 selection:text-slate-950">
       {/* Top Bar Header */}
       <Header
         onScrollToSimulator={scrollToSimulator}
@@ -73,7 +86,7 @@ function Landing() {
 
       {/* Main Content Sections */}
       <main className="flex-1">
-        {/* Hero Section with Immediate Values Simulator */}
+        {/* Hero Section with Interactive Credit Simulator */}
         <SimulatorHero
           onOpenPrivacy={() => setIsPrivacyOpen(true)}
         />
@@ -81,7 +94,7 @@ function Landing() {
         {/* 3-Step Clear Process */}
         <HowItWorks />
 
-        {/* Transparent Operation & Lead Generation Model */}
+        {/* Transparent Operation Model */}
         <OperationModel />
 
         {/* Regulatory Credit Conditions & Representative Example */}
@@ -103,8 +116,10 @@ function Landing() {
         onOpenTerms={() => setIsTermsOpen(true)}
       />
 
+      {/* Automatic Measurement Consent (Activated silently on entry as requested) */}
       <MeasurementConsent />
-      {/* Full Modal Views */}
+
+      {/* Legal Modals */}
       <PrivacyPolicyModal
         isOpen={isPrivacyOpen}
         onClose={() => {
@@ -124,9 +139,6 @@ function Landing() {
           }
         }}
       />
-
-
-
     </div>
   );
 }

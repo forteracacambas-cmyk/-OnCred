@@ -1,11 +1,15 @@
 // Identificação fornecida pelo responsável e conferida na política oficial da OnCred.
 export const DEFAULT_WHATSAPP_NUMBER = ""; // Destinos reais são cadastrados no painel D1.
-export const DISPLAY_PHONE_NUMBER = "(11) 4020-2016";
-export const DEFAULT_CONTACT_EMAIL = "contato@oncred.com.br";
+export const DISPLAY_PHONE_NUMBER = "+55 (11) 3042-0181";
+export const DEFAULT_CONTACT_EMAIL = "contato@oncreditsa.online";
 export const INSTITUTIONAL_DATA = {
  legalName: "OnCred Sociedade de Crédito Direto S.A.", tradeName: "OnCred SCD",
  cnpj: "44.650.156/0001-93", city: "São Caetano do Sul - SP",
  address: "Rua Amazonas, 363, 7º andar, Sala 78, Centro, São Caetano do Sul - SP, CEP 09520-070",
+ phone: "+55 (11) 3042-0181",
+ email: "contato@oncreditsa.online",
+ domain: "oncreditsa.online",
+ siteUrl: "https://oncreditsa.online/",
  regulatoryStatement: "Esta página é destinada à simulação informativa e ao encaminhamento para atendimento. Não realiza contratação nem liberação de crédito dentro do site.",
 };
 // Parâmetros solicitados pelo responsável, iguais aos do simulador SANTS.

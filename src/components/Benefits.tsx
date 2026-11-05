@@ -1,47 +1,52 @@
 import React from 'react';
-import { Smartphone, CheckCircle2, Globe, UserCheck, ShieldCheck } from 'lucide-react';
+import { Smartphone, CheckCircle2, Globe, UserCheck, ShieldCheck, Zap } from 'lucide-react';
 
 export const Benefits: React.FC = () => {
   const benefits = [
     {
-      title: 'Atendimento digital',
-      description: 'Inicie e acompanhe sua solicitação pelo celular ou computador, de onde estiver.',
+      title: 'Atendimento 100% digital',
+      description: 'Inicie e acompanhe sua solicitação pelo celular ou computador, de onde você estiver com total praticidade.',
       icon: Smartphone,
     },
     {
-      title: 'Processo simples',
-      description: 'Envio rápido das informações básicas pelo WhatsApp para início da triagem cadastral.',
-      icon: CheckCircle2,
+      title: 'Sem taxas antecipadas',
+      description: 'Nunca cobramos nenhum valor prévio para análise ou liberação. Cobrança antecipada é crime.',
+      icon: ShieldCheck,
     },
     {
-      title: 'Solicitação online',
-      description: 'Sem necessidade de deslocamento físico até uma agência bancária tradicional.',
-      icon: Globe,
+      title: 'Triagem direta no WhatsApp',
+      description: 'Envio rápido dos parâmetros calculados diretamente para um atendente humano dedicado.',
+      icon: Zap,
     },
     {
-      title: 'Análise individual',
-      description: 'As condições dependem da análise da instituição responsável pela operação.',
+      title: 'Análise individualizada',
+      description: 'As condições são calculadas sob medida pela instituição responsável conforme o perfil cadastral.',
       icon: UserCheck,
     },
     {
-      title: 'Segurança e transparência',
-      description: 'Informações claras sobre simulação, encaminhamento e uso de dados.',
-      icon: ShieldCheck,
+      title: 'Sem filas de agências',
+      description: 'Elimine burocracias e trâmites presenciais tradicionais com documentação digital simplificada.',
+      icon: Globe,
+    },
+    {
+      title: 'Sigilo e segurança LGPD',
+      description: 'Seus dados de contato e informações são protegidos com respeito rigoroso à legislação vigente.',
+      icon: CheckCircle2,
     },
   ];
 
   return (
-    <section className="py-16 bg-slate-50 border-b border-slate-200">
+    <section className="py-20 bg-slate-950 border-b border-slate-800 text-white">
       <div className="max-w-5xl mx-auto px-4 sm:px-6">
 
-        <div className="text-center max-w-2xl mx-auto mb-12">
-          <span className="text-xs font-bold text-blue-600 uppercase tracking-widest">
+        <div className="text-center max-w-2xl mx-auto mb-14">
+          <span className="text-xs font-bold text-emerald-400 uppercase tracking-widest font-mono">
             Vantagens do Modelo Digital
           </span>
-          <h2 className="text-2xl sm:text-3xl font-bold text-slate-900 mt-2 tracking-tight">
-            Por que solicitar com a OnCred?
+          <h2 className="text-2xl sm:text-3xl font-extrabold text-white mt-2 tracking-tight">
+            Por que simular com a OnCred?
           </h2>
-          <p className="text-sm sm:text-base text-slate-600 mt-2">
+          <p className="text-sm sm:text-base text-slate-300 mt-2">
             Estrutura voltada à eficiência, respeito aos seus dados e clareza em todas as etapas.
           </p>
         </div>
@@ -52,16 +57,16 @@ export const Benefits: React.FC = () => {
             return (
               <div
                 key={index}
-                className="bg-white border border-slate-200/80 rounded-2xl p-6 shadow-sm hover:border-slate-300 transition-all flex flex-col justify-between"
+                className="bg-slate-900/80 border border-slate-800 rounded-3xl p-6 shadow-sm hover:border-slate-700 transition-all flex flex-col justify-between"
               >
                 <div>
-                  <div className="w-11 h-11 rounded-xl bg-blue-50 border border-blue-100 flex items-center justify-center text-blue-600 mb-4">
-                    <Icon className="w-5 h-5" />
+                  <div className="w-12 h-12 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 mb-5 shadow-inner">
+                    <Icon className="w-6 h-6" />
                   </div>
-                  <h3 className="text-base font-bold text-slate-900 mb-2">
+                  <h3 className="text-base font-bold text-white mb-2">
                     {benefit.title}
                   </h3>
-                  <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
+                  <p className="text-xs sm:text-sm text-slate-400 leading-relaxed">
                     {benefit.description}
                   </p>
                 </div>
