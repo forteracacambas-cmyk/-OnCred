@@ -64,16 +64,10 @@ export const Header: React.FC<HeaderProps> = ({ onScrollToSimulator }) => {
           </a>
         </nav>
 
-        {/* Zone 3: Direct Phone */}
-        <div className="flex items-center gap-3 shrink-0">
-          <a
-            href={`tel:${DISPLAY_PHONE_NUMBER.replace(/\D/g, '')}`}
-            className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-mono font-semibold text-slate-200 bg-slate-900 border border-slate-800 hover:border-emerald-500/50 rounded-xl hover:text-emerald-400 transition-all shadow-sm"
-            title="Ligar para a central"
-          >
-            <Phone className="w-3.5 h-3.5 text-emerald-400" />
-            <span>{DISPLAY_PHONE_NUMBER}</span>
-          </a>
+        {/* Zone 3: Clean placeholder or empty zone */}
+        <div className="hidden sm:flex items-center gap-2 text-xs font-mono text-emerald-400">
+          <span className="w-2 h-2 rounded-full bg-emerald-400" />
+          <span className="text-[11px] text-slate-300">Plataforma Segura</span>
         </div>
       </div>
     </header>
