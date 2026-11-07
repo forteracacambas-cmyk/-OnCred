@@ -1,15 +1,15 @@
-// Identificação fornecida pelo responsável e conferida na política oficial da ZM SCD.
+// Identificação fornecida pelo responsável e conferida no comprovante de CNPJ da ZM SCD.
 export const DEFAULT_WHATSAPP_NUMBER = ""; // Destinos reais são cadastrados no painel D1.
 export const DISPLAY_PHONE_NUMBER = "+55 (11) 3042-0181";
-export const DEFAULT_CONTACT_EMAIL = "contato@oncreditsa.online";
+export const DEFAULT_CONTACT_EMAIL = "contato@zmscd.online";
 export const INSTITUTIONAL_DATA = {
  legalName: "ZM SOCIEDADE DE CREDITO DIRETO SA", tradeName: "ZM SCD",
- cnpj: "49.947.715/0001-45", city: "GO",
- address: "Q Rua Formosa, Quadra 1, Número 12, Lote GO, CEP 72.927-839",
+ cnpj: "49.947.715/0001-45", city: "Águas Lindas de Goiás - GO",
+ address: "Q Rua Formosa - Quadra 1 - Lote, nº 12, Recanto da Barragem, Águas Lindas de Goiás - GO, CEP 72927-839",
  phone: "+55 (11) 3042-0181",
- email: "contato@oncreditsa.online",
- domain: "oncreditsa.online",
- siteUrl: "https://oncreditsa.online/",
+ email: "contato@zmscd.online",
+ domain: "zmscd.online",
+ siteUrl: "https://zmscd.online/",
  regulatoryStatement: "Esta página é destinada à simulação informativa e ao encaminhamento para atendimento. Não realiza contratação nem liberação de crédito dentro do site.",
 };
 // Parâmetros solicitados pelo responsável, iguais aos do simulador SANTS.

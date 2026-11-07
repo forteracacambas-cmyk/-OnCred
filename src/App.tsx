@@ -3,7 +3,7 @@
  * Landing Page de Alta Conversão em Conformidade Regulatória (Bacen / LGPD / TikTok Ads)
  * Razão Social: ZM SOCIEDADE DE CREDITO DIRETO SA
  * CNPJ: 49.947.715/0001-45
- * Domínio: oncreditsa.online | Telefone: +55 (11) 3042-0181
+ * Domínio: zmscd.online | Telefone: +55 (11) 3042-0181
  */
 
 import React, { useState, useEffect, lazy, Suspense } from 'react';

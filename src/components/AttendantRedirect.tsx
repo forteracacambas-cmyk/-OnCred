@@ -43,7 +43,7 @@ export default function AttendantRedirect() {
         {href && <a href={href} className="block rounded-xl bg-emerald-500 px-5 py-4 text-slate-950 font-bold hover:bg-emerald-400">Abrir WhatsApp</a>}
         {href && <p className="text-xs text-slate-400 mt-3">Se o aplicativo não abrir automaticamente, toque no botão acima.</p>}
         {error && <button onClick={() => setAttempt(v => v + 1)} className="w-full rounded-xl bg-blue-600 px-5 py-4 font-bold">Tentar novamente</button>}
-        {error && <a href="https://oncreditsa.online/" className="block mt-4 underline text-blue-200">Consultar os canais institucionais da ZM SCD</a>}
+        {error && <a href="https://zmscd.online/" className="block mt-4 underline text-blue-200">Consultar os canais institucionais da ZM SCD</a>}
         <a href="/#simulador" className="inline-block mt-6 text-sm text-slate-300 underline">Voltar ao simulador</a>
       </section>
     </main>
