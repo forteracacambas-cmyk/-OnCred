@@ -35,7 +35,7 @@ export const HowItWorks: React.FC = () => {
             Transparência do Início ao Fim
           </span>
           <h2 className="text-2xl sm:text-3xl font-extrabold text-white mt-2 tracking-tight" style={{ textWrap: 'balance' }}>
-            Como funciona a sua solicitação na OnCred
+            Como funciona a sua solicitação na ZM SCD
           </h2>
           <p className="text-sm sm:text-base text-slate-300 mt-3 leading-relaxed">
             Sem filas, sem burocracia desnecessária e com total clareza em cada etapa.

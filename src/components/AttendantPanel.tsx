@@ -62,7 +62,7 @@ export default function AttendantPanel() {
     setStats(totals);
   };
   useEffect(() => {
-    document.title = "Painel de atendentes | OnCred";
+    document.title = "Painel de atendentes | ZM SCD";
     document
       .querySelector('meta[name="robots"]')
       ?.setAttribute("content", "noindex,nofollow");
@@ -144,7 +144,7 @@ export default function AttendantPanel() {
         <header className="panel-heading">
           <div>
             <div className="panel-brand">
-              OnCred <span>SCD</span>
+              ZM <span>SCD</span>
             </div>
             <h1>Painel de atendentes</h1>
             <p>Distribuição de encaminhamentos para o WhatsApp</p>

@@ -1,8 +1,8 @@
 /**
- * OnCred - SOLICITAÇÃO DE CRÉDITO INTELIGENTE
+ * ZM SCD - SOLICITAÇÃO DE CRÉDITO INTELIGENTE
  * Landing Page de Alta Conversão em Conformidade Regulatória (Bacen / LGPD / TikTok Ads)
- * Razão Social: OnCred Sociedade de Crédito Direto S.A.
- * CNPJ: 44.650.156/0001-93
+ * Razão Social: ZM SOCIEDADE DE CREDITO DIRETO SA
+ * CNPJ: 49.947.715/0001-45
  * Domínio: oncreditsa.online | Telefone: +55 (11) 3042-0181
  */
 
@@ -103,7 +103,7 @@ function Landing() {
         {/* Genuine Fintech Benefits */}
         <Benefits />
 
-        {/* About OnCred (Authorized by BCB) */}
+        {/* About ZM SCD (Authorized by BCB) */}
         <AboutSants />
 
         {/* Frequently Asked Questions */}

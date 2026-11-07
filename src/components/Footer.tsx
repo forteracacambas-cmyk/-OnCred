@@ -17,10 +17,10 @@ export function Footer({ onOpenPrivacy, onOpenTerms }: Props) {
           <div className="md:col-span-2 space-y-3">
             <div className="flex items-center gap-2.5">
               <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 font-extrabold text-base">
-                O
+                Z
               </div>
               <span className="text-xl font-extrabold tracking-tight text-white">
-                On<span className="text-emerald-400">Cred</span> <span className="text-xs text-slate-400 font-mono font-medium">SCD S.A.</span>
+                ZM <span className="text-emerald-400">SCD</span> <span className="text-xs text-slate-400 font-mono font-medium">S.A.</span>
               </span>
             </div>
             <p className="text-slate-300 text-xs leading-relaxed max-w-md">

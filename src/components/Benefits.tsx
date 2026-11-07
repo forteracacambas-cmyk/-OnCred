@@ -44,7 +44,7 @@ export const Benefits: React.FC = () => {
             Vantagens do Modelo Digital
           </span>
           <h2 className="text-2xl sm:text-3xl font-extrabold text-white mt-2 tracking-tight">
-            Por que simular com a OnCred?
+            Por que simular com a ZM SCD?
           </h2>
           <p className="text-sm sm:text-base text-slate-300 mt-2">
             Estrutura voltada à eficiência, respeito aos seus dados e clareza em todas as etapas.

@@ -22,10 +22,10 @@ export const Header: React.FC<HeaderProps> = ({ onScrollToSimulator }) => {
           </div>
           <div className="flex flex-col">
             <span className="font-extrabold tracking-tight text-white text-lg leading-tight">
-              On<span className="text-emerald-400">Cred</span>
+              ZM <span className="text-emerald-400">SCD</span>
             </span>
             <span className="text-[10px] text-slate-400 font-mono tracking-wider uppercase leading-none">
-              SCD S.A.
+              Sociedade de Crédito Direto
             </span>
           </div>
         </a>
@@ -54,7 +54,7 @@ export const Header: React.FC<HeaderProps> = ({ onScrollToSimulator }) => {
             href="#sobre"
             className="hover:text-emerald-400 transition-colors whitespace-nowrap shrink-0"
           >
-            Sobre a OnCred
+            Sobre a ZM SCD
           </a>
           <a
             href="#duvidas"

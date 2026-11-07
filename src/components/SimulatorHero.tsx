@@ -169,7 +169,7 @@ export const SimulatorHero: React.FC<SimulatorHeroProps> = ({ onOpenPrivacy, onO
     const formattedAmount = formatCurrencyBRL(amount);
     const formattedPayment = formatCurrencyExactBRL(estimatedPayment);
 
-    const message = `Olá! Vim pelo site da OnCred e gostaria de iniciar uma solicitação para análise de crédito.\n\nPerfil: ${profileText}\nValor de interesse: ${formattedAmount}\nPrazo selecionado: ${term} meses\nParcela mensal estimada: ${formattedPayment}\n\nEstou ciente de que esta é uma estimativa inicial e que a solicitação está sujeita à análise cadastral e de crédito.`;
+    const message = `Olá! Vim pelo site da ZM SCD e gostaria de iniciar uma solicitação para análise de crédito.\n\nPerfil: ${profileText}\nValor de interesse: ${formattedAmount}\nPrazo selecionado: ${term} meses\nParcela mensal estimada: ${formattedPayment}\n\nEstou ciente de que esta é uma estimativa inicial e que a solicitação está sujeita à análise cadastral e de crédito.`;
 
     routingRef.current = true;
     setRouting(true);
@@ -201,7 +201,7 @@ export const SimulatorHero: React.FC<SimulatorHeroProps> = ({ onOpenPrivacy, onO
             <div className="inline-flex items-center justify-center gap-1.5 px-3 py-1 rounded-full bg-emerald-950/60 border border-emerald-500/30 text-center shadow-sm mb-4 sm:mb-6">
               <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
               <span className="text-[11px] sm:text-xs text-emerald-200 font-medium">
-                OnCred Sociedade de Crédito Direto • Regulada pelo Banco Central • 18+
+                ZM Sociedade de Crédito Direto • Regulada pelo Banco Central • 18+
               </span>
             </div>
 

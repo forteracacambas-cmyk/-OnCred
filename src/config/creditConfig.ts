@@ -1,11 +1,11 @@
-// Identificação fornecida pelo responsável e conferida na política oficial da OnCred.
+// Identificação fornecida pelo responsável e conferida na política oficial da ZM SCD.
 export const DEFAULT_WHATSAPP_NUMBER = ""; // Destinos reais são cadastrados no painel D1.
 export const DISPLAY_PHONE_NUMBER = "+55 (11) 3042-0181";
 export const DEFAULT_CONTACT_EMAIL = "contato@oncreditsa.online";
 export const INSTITUTIONAL_DATA = {
- legalName: "OnCred Sociedade de Crédito Direto S.A.", tradeName: "OnCred SCD",
- cnpj: "44.650.156/0001-93", city: "São Caetano do Sul - SP",
- address: "Rua Amazonas, 363, 7º andar, Sala 78, Centro, São Caetano do Sul - SP, CEP 09520-070",
+ legalName: "ZM SOCIEDADE DE CREDITO DIRETO SA", tradeName: "ZM SCD",
+ cnpj: "49.947.715/0001-45", city: "GO",
+ address: "Q Rua Formosa, Quadra 1, Número 12, Lote GO, CEP 72.927-839",
  phone: "+55 (11) 3042-0181",
  email: "contato@oncreditsa.online",
  domain: "oncreditsa.online",

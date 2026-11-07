@@ -8,7 +8,7 @@ const items = [
   ],
   [
     'Cobram algum valor ou taxa antecipada para liberar empréstimo?',
-    'NUNCA, sob hipótese alguma! A cobrança antecipada para liberação de empréstimo é crime (Art. 171 do Código Penal). A OnCred SCD e as instituições parceiras nunca solicitam adiantamentos, seguros-fiança ou depósitos para aprovação de crédito.',
+    'NUNCA, sob hipótese alguma! A cobrança antecipada para liberação de empréstimo é crime (Art. 171 do Código Penal). A ZM SCD e as instituições parceiras nunca solicitam adiantamentos, seguros-fiança ou depósitos para aprovação de crédito.',
   ],
   [
     'Quem recebe minha solicitação após clicar em Solicitar Análise?',

@@ -11,7 +11,7 @@ export function AboutSants() {
             Identificação Institucional
           </span>
           <h2 className="text-2xl sm:text-3xl font-extrabold text-white mt-2 tracking-tight">
-            Sobre a OnCred SCD S.A.
+            Sobre a ZM Sociedade de Crédito Direto S.A.
           </h2>
           <p className="mt-3 text-sm text-slate-400">
             {company.regulatoryStatement}
