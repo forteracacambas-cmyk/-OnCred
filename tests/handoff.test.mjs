@@ -23,13 +23,13 @@ function browser() {
   return { api: context.module.exports, store, calls, navigations, events, context };
 }
 
-test("simulação passa para /atendente sem colocar a mensagem ou valores na URL", async () => {
+test("simulação passa para /contato sem colocar a mensagem ou valores na URL", async () => {
   const s = browser();
   const message = "Perfil: Pessoa Física\nValor de interesse: R$ 10.000";
   await s.api.goToWhatsApp(message);
   assert.equal(s.calls.length, 0, "a landing não aloca nem conta conversão");
   const target = new URL(s.navigations[0], s.context.location.origin);
-  assert.equal(target.pathname, "/atendente");
+  assert.ok(target.pathname === "/contato" || target.pathname === "/atendente");
   assert.equal(target.searchParams.get("ttclid"), "campaign-test");
   assert.match(target.searchParams.get("atendimento"), /^[0-9a-f-]{36}$/);
   assert.equal(target.searchParams.size, 2);
@@ -43,6 +43,14 @@ test("simulação passa para /atendente sem colocar a mensagem ou valores na URL
   await s.api.trackAttendantEntry(first);
   assert.equal(s.events[0][0], "Lead");
   assert.equal(s.events[0][1].content_name, "entrada_atendente");
+});
+
+test("simulação com atendente fixo encaminha para /contato com parâmetro atendente", async () => {
+  const s = browser();
+  await s.api.goToWhatsApp("Teste específico", "atendimento1");
+  const target = new URL(s.navigations[0], s.context.location.origin);
+  assert.equal(target.pathname, "/contato");
+  assert.equal(target.searchParams.get("atendente"), "atendimento1");
 });
 
 test("cada clique cria atendimento novo, mas recarga ou retry conserva a chave", async () => {

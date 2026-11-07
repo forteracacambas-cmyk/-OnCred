@@ -28,9 +28,10 @@ import { goToWhatsApp, initVisitor } from '../utils/atendimento';
 interface SimulatorHeroProps {
   onOpenPrivacy: () => void;
   onOpenConfig?: () => void;
+  fixedAgent?: string;
 }
 
-export const SimulatorHero: React.FC<SimulatorHeroProps> = ({ onOpenPrivacy, onOpenConfig }) => {
+export const SimulatorHero: React.FC<SimulatorHeroProps> = ({ onOpenPrivacy, onOpenConfig, fixedAgent }) => {
   // Controle de modo: Página principal com informações vs. Funil separado passo a passo
   const [isFunnelActive, setIsFunnelActive] = useState<boolean>(false);
 
@@ -174,7 +175,7 @@ export const SimulatorHero: React.FC<SimulatorHeroProps> = ({ onOpenPrivacy, onO
     routingRef.current = true;
     setRouting(true);
     try {
-      await goToWhatsApp(message);
+      await goToWhatsApp(message, fixedAgent);
     } catch (err) {
       setValidationError(err instanceof Error ? err.message : 'Não foi possível encaminhar. Tente novamente.');
     } finally {

@@ -105,6 +105,59 @@ async function handle({ request, env, params }) {
     const req = uuid(),
       event = uuid(),
       now = Date.now();
+
+    // Rota direta para atendente específico (/atendimento1, /atendente1, número ou ID)
+    const specificAgent = data.agent ? String(data.agent).trim() : null;
+    if (specificAgent) {
+      const numMatch = specificAgent.match(/(?:atendimento|atendente)?(\d+)/i);
+      const pos = numMatch ? parseInt(numMatch[1], 10) : -1;
+      const found = await sql(
+        `SELECT id, name, phone, active FROM agents 
+         WHERE deleted=0 AND (
+           id=? 
+           OR position=? 
+           OR lower(name)=lower(?) 
+           OR 'atendimento' || position = lower(?)
+           OR 'atendente' || position = lower(?)
+         )
+         ORDER BY (CASE WHEN active=1 THEN 0 ELSE 1 END), position LIMIT 1`,
+        specificAgent,
+        pos,
+        specificAgent,
+        specificAgent,
+        specificAgent,
+      ).first();
+
+      if (found) {
+        const batchResults = await db.batch([
+          sql(
+            "INSERT INTO visitors(id,event_id,agent_id,created_at,route_token) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET agent_id=?, route_token=?",
+            id, event, found.id, now, req, found.id, req,
+          ),
+          sql(
+            "INSERT INTO deliveries(id,visitor_id,agent_id,created_at,first_delivery) VALUES(?,?,?,?, NOT EXISTS(SELECT 1 FROM deliveries WHERE visitor_id=?))",
+            req, id, found.id, now, id,
+          ),
+          sql(
+            "UPDATE visitors SET pixel_claimed=1 WHERE id=? AND pixel_claimed=0 AND ?=1 RETURNING event_id",
+            id, data.analytics === true ? 1 : 0,
+          ),
+        ]);
+        return json(
+          {
+            phone: found.phone,
+            name: found.name,
+            eventId: event,
+            trackContact: batchResults[2].results.length === 1,
+            isDirect: true,
+          },
+          200,
+          { Vary: "Cookie" },
+        );
+      }
+      // Se não encontrou o atendente específico, segue para o rodízio geral para não perder a conversão
+    }
+
     let results;
     try {
       results = await db.batch([

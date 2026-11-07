@@ -36,10 +36,24 @@ export default function AttendantPanel() {
   const [agents, setAgents] = useState<Agent[]>([]),
     [batch, setBatch] = useState(1),
     [period, setPeriod] = useState("today"),
-    [stats, setStats] = useState<any>(null);
+    [stats, setStats] = useState<any>(null),
+    [copiedLink, setCopiedLink] = useState<string | null>(null);
   const [editing, setEditing] = useState<Agent | null>(null),
     [name, setName] = useState(""),
     [phone, setPhone] = useState("");
+
+  const origin = typeof window !== "undefined" ? window.location.origin : "https://zmscd.online";
+
+  const copyLink = (url: string, id: string) => {
+    try {
+      navigator.clipboard.writeText(url);
+      setCopiedLink(id);
+      setTimeout(() => setCopiedLink(null), 2500);
+    } catch {
+      // fallback
+    }
+  };
+
   const request = async (path: string, method = "GET", data?: unknown) => {
     try {
       return await api("admin/" + path, method, data, token);
@@ -60,6 +74,9 @@ export default function AttendantPanel() {
     setAgents(config.agents);
     setBatch(config.batchSize);
     setStats(totals);
+    try {
+      localStorage.setItem("oncred_local_agents", JSON.stringify(config.agents));
+    } catch {}
   };
   useEffect(() => {
     document.title = "Painel de atendentes | ZM SCD";
@@ -257,6 +274,56 @@ export default function AttendantPanel() {
               incluem hoje. Os números indicam encaminhamentos; não confirmam
               envio de mensagem.
             </p>
+
+            {/* GUIA DE URLS E CAMPANHAS (TIKTOK ADS / META ADS) */}
+            <section className="campaign-guide">
+              <div className="panel-section-header">
+                <div>
+                  <h2 style={{ color: "#38bdf8", fontSize: "17px", fontWeight: 700 }}>
+                    🎯 Estrutura de URLs para Campanhas e Anúncios
+                  </h2>
+                  <p>
+                    Controle exato da distribuição de tráfego e disparo de Pixel:
+                  </p>
+                </div>
+              </div>
+
+              <div className="campaign-guide-grid">
+                <div className="campaign-guide-item">
+                  <h3>1. Link Geral (Site Principal)</h3>
+                  <p>
+                    Distribui os cliques por igual (em lotes) entre todos os atendentes ativos no painel.
+                  </p>
+                  <div className="campaign-guide-code">{origin}/</div>
+                  <div style={{ marginTop: "10px" }}>
+                    <button
+                      type="button"
+                      className={`campaign-btn ${copiedLink === 'main' ? 'copied' : ''}`}
+                      onClick={() => copyLink(origin + "/", "main")}
+                    >
+                      {copiedLink === 'main' ? "✓ Link Geral Copiado!" : "Copiar Link Geral"}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="campaign-guide-item">
+                  <h3>2. Links Individuais (Por Atendente)</h3>
+                  <p>
+                    Página idêntica ao site para criar campanhas exclusivas. O lead vai <strong>100% direto</strong> para o WhatsApp do atendente cadastrado.
+                  </p>
+                  <div className="campaign-guide-code">{origin}/atendimento1, {origin}/atendimento2...</div>
+                </div>
+
+                <div className="campaign-guide-item">
+                  <h3>3. Redirecionamento & Pixel de Conversão</h3>
+                  <p>
+                    Tanto a página geral quanto as individuais passam obrigatoriamente pela URL <strong>/contato</strong> para registrar a conversão do Pixel antes do WhatsApp.
+                  </p>
+                  <div className="campaign-guide-code">{origin}/contato</div>
+                </div>
+              </div>
+            </section>
+
             <section className="panel-card">
               <h2>Distribuição por lote</h2>
               <p>
@@ -357,6 +424,7 @@ export default function AttendantPanel() {
                       <tr>
                         <th>Ordem</th>
                         <th>Nome / telefone</th>
+                        <th>Página Exclusiva (Link de Campanha)</th>
                         <th>Status</th>
                         <th>Atendimentos iniciados</th>
                         <th>Encaminhamentos</th>
@@ -368,12 +436,41 @@ export default function AttendantPanel() {
                         const counts = stats?.agents?.find(
                           (v: any) => v.id === a.id,
                         );
+                        const campaignUrl = `${origin}/atendimento${a.position}`;
+                        const isCopied = copiedLink === a.id;
                         return (
                           <tr key={a.id}>
                             <td>{a.position}</td>
                             <td>
                               <strong>{a.name}</strong>
                               <small>{formatDisplayPhone(a.phone)}</small>
+                            </td>
+                            <td>
+                              <div className="campaign-box">
+                                <span className="campaign-url">{campaignUrl}</span>
+                                <div className="campaign-actions">
+                                  <button
+                                    type="button"
+                                    className={`campaign-btn ${isCopied ? "copied" : ""}`}
+                                    onClick={() => copyLink(campaignUrl, a.id)}
+                                    title="Copiar URL para anunciar em campanhas"
+                                  >
+                                    {isCopied ? "✓ Copiado!" : "Copiar Link"}
+                                  </button>
+                                  <a
+                                    href={`/atendimento${a.position}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="campaign-btn"
+                                    style={{ textDecoration: "none" }}
+                                  >
+                                    Visualizar ↗
+                                  </a>
+                                </div>
+                                <span className="campaign-tag">
+                                  100% exclusivo para {a.name} (passa por /contato)
+                                </span>
+                              </div>
                             </td>
                             <td>
                               <span className={a.active ? "active" : "paused"}>

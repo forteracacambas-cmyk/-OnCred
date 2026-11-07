@@ -24,24 +24,35 @@ const AttendantPanel = lazy(() => import('./components/AttendantPanel'));
 const AttendantRedirect = lazy(() => import('./components/AttendantRedirect'));
 
 export default function App() {
-  if (/^\/painel(?:\/|$)/.test(location.pathname)) {
+  const path = location.pathname.toLowerCase().replace(/\/$/, "");
+
+  // 1. Painel Administrativo de Atendentes
+  if (/^\/painel(?:\/|$)/.test(path)) {
     return (
       <Suspense fallback={<div className="min-h-screen bg-slate-950 text-white flex items-center justify-center p-6"><p className="font-mono text-sm">Carregando painel de atendimento…</p></div>}>
         <AttendantPanel />
       </Suspense>
     );
   }
-  if (/^\/atendente\/?$/.test(location.pathname)) {
+
+  // 2. Página de Redirecionamento e Disparo de Pixel (/contato e retrocompatível /atendente)
+  if (path === "/contato" || path === "/atendente") {
     return (
       <Suspense fallback={<div className="min-h-screen bg-slate-950 text-white flex items-center justify-center p-6"><p className="font-mono text-sm">Conectando ao canal de atendimento…</p></div>}>
         <AttendantRedirect />
       </Suspense>
     );
   }
-  return <Landing />;
+
+  // 3. Páginas Dedicadas de Atendente (/atendimento1, /atendimento2, /atendente1, /atendente2, etc.)
+  const agentMatch = path.match(/^\/(?:atendimento|atendente)(\d+|[a-z0-9_-]+)$/i);
+  const queryParam = new URLSearchParams(location.search).get("atendente") || new URLSearchParams(location.search).get("atendimento");
+  const fixedAgent = agentMatch ? agentMatch[0].replace(/^\//, '') : (queryParam || undefined);
+
+  return <Landing fixedAgent={fixedAgent} />;
 }
 
-function Landing() {
+function Landing({ fixedAgent }: { fixedAgent?: string }) {
   const [isPrivacyOpen, setIsPrivacyOpen] = useState(false);
   const [isTermsOpen, setIsTermsOpen] = useState(false);
 
@@ -89,6 +100,7 @@ function Landing() {
         {/* Hero Section with Interactive Credit Simulator */}
         <SimulatorHero
           onOpenPrivacy={() => setIsPrivacyOpen(true)}
+          fixedAgent={fixedAgent}
         />
 
         {/* 3-Step Clear Process */}

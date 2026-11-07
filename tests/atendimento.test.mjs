@@ -331,3 +331,25 @@ test("limpar histórico zera todos os registros, visitantes, encaminhamentos e c
   assert.equal((await s.db.prepare("SELECT COUNT(*) n FROM visitors").first()).n, 0);
   assert.equal((await s.db.prepare("SELECT COUNT(*) n FROM deliveries").first()).n, 0);
 });
+
+test("rota direta por atendente (/atendimento1) direciona exclusivamente para aquele número sem afetar rodízio", async (t) => {
+  const s = await setup(t);
+  const a1 = await s.add("Atendente Um", "11999991111");
+  const a2 = await s.add("Atendente Dois", "11999992222");
+
+  const v1 = await s.visitor();
+  const res1 = await s.call("route", {
+    method: "POST",
+    body: { analytics: true, handoffId: "11111111-1111-1111-1111-111111111111", agent: "atendimento2" },
+    cookie: v1,
+  });
+  assert.equal(res1.status, 200);
+  assert.equal(res1.data.phone, a2.phone);
+  assert.equal(res1.data.isDirect, true);
+
+  // O rodízio geral não foi afetado pela rota direta
+  const v2 = await s.visitor();
+  const res2 = await s.route(v2);
+  assert.equal(res2.data.phone, a1.phone);
+});
+
