@@ -353,3 +353,62 @@ test("rota direta por atendente (/atendimento1) direciona exclusivamente para aq
   assert.equal(res2.data.phone, a1.phone);
 });
 
+test("rota direta recusa atendente inativo com 409 e inexistente/excluído com 404 sem cair no rodízio", async (t) => {
+  const s = await setup(t);
+  const a1 = await s.add("Atendente Ativo", "11999991111");
+  const a2 = await s.add("Atendente Inativo", "11999992222");
+  await s.admin("agents/" + a2.id, "PUT", { ...a2, active: false });
+
+  const v1 = await s.visitor();
+  // Atendente inativo -> 409
+  const resInactive = await s.call("route", {
+    method: "POST",
+    body: { analytics: true, handoffId: "22222222-2222-2222-2222-222222222222", agent: "atendimento2" },
+    cookie: v1,
+  });
+  assert.equal(resInactive.status, 409);
+  assert.equal(resInactive.data.error, "Atendente temporariamente indisponível.");
+
+  // Atendente inexistente -> 404
+  const resNotFound = await s.call("route", {
+    method: "POST",
+    body: { analytics: true, handoffId: "33333333-3333-3333-3333-333333333333", agent: "atendimento99" },
+    cookie: v1,
+  });
+  assert.equal(resNotFound.status, 404);
+  assert.equal(resNotFound.data.error, "Atendente não encontrado.");
+
+  // O rodízio geral continua intacto apontando para a1
+  const v3 = await s.visitor();
+  const resNormal = await s.route(v3);
+  assert.equal(resNormal.status, 200);
+  assert.equal(resNormal.data.phone, a1.phone);
+});
+
+test("retentativas na rota específica retornam o eventId persistido original e trackContact false", async (t) => {
+  const s = await setup(t);
+  const a1 = await s.add("Atendente Um", "11999991111");
+
+  const v = await s.visitor();
+  const handoffId = "44444444-4444-4444-4444-444444444444";
+  const first = await s.call("route", {
+    method: "POST",
+    body: { analytics: true, handoffId, agent: "atendimento1" },
+    cookie: v,
+  });
+  assert.equal(first.status, 200);
+  assert.equal(first.data.trackContact, true);
+  const originalEventId = first.data.eventId;
+  assert.ok(originalEventId);
+
+  // Retentativa com mesmo handoffId (recarregou /contato ou clicou em tentar novamente)
+  const retry = await s.call("route", {
+    method: "POST",
+    body: { analytics: true, handoffId, agent: "atendimento1" },
+    cookie: v,
+  });
+  assert.equal(retry.status, 200);
+  assert.equal(retry.data.eventId, originalEventId, "eventId deve ser o persistido original");
+  assert.equal(retry.data.trackContact, false, "trackContact deve ser false em retry");
+});
+

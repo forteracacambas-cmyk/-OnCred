@@ -115,8 +115,8 @@ export async function goToWhatsApp(message: string, fixedAgent?: string) {
   routing = true;
   try {
     sessionStorage.setItem("oncred_handoff", JSON.stringify({ message, at: Date.now() }));
-    if (fixedAgent) {
-      sessionStorage.setItem("oncred_fixed_agent", fixedAgent);
+    if (fixedAgent && !/^[0-9a-f-]{36}$/i.test(fixedAgent.trim())) {
+      sessionStorage.setItem("oncred_fixed_agent", fixedAgent.trim());
     } else {
       if (typeof sessionStorage?.removeItem === "function") {
         sessionStorage.removeItem("oncred_fixed_agent");
@@ -126,23 +126,46 @@ export async function goToWhatsApp(message: string, fixedAgent?: string) {
     }
     const next = new URL("/contato", location.origin);
     next.searchParams.set("atendimento", crypto.randomUUID());
-    if (fixedAgent) {
-      next.searchParams.set("atendente", fixedAgent);
+    if (fixedAgent && !/^[0-9a-f-]{36}$/i.test(fixedAgent.trim())) {
+      next.searchParams.set("atendente", fixedAgent.trim());
     }
     const current = new URL(location.href);
     for (const key of ["ttclid", "tt_test_id", "utm_source", "utm_medium", "utm_campaign", "utm_id", "utm_content", "utm_term"]) {
       const value = current.searchParams.get(key);
       if (value) next.searchParams.set(key, value);
     }
-    // Preserva atendente caso tenha vindo via query param
-    const agentParam = current.searchParams.get("atendente") || current.searchParams.get("atendimento") || current.searchParams.get("agente");
-    if (agentParam && !next.searchParams.has("atendente")) {
-      next.searchParams.set("atendente", agentParam);
+    // Preserva atendente caso tenha vindo via query param (nunca atendimento como agente)
+    const agentParam = current.searchParams.get("atendente") || current.searchParams.get("agente");
+    if (agentParam && !next.searchParams.has("atendente") && !/^[0-9a-f-]{36}$/i.test(agentParam.trim())) {
+      next.searchParams.set("atendente", agentParam.trim());
     }
     location.assign(next.pathname + next.search);
   } finally {
     routing = false;
   }
+}
+
+export function hasValidRecentHandoff(): boolean {
+  try {
+    const raw = sessionStorage.getItem("oncred_handoff");
+    if (!raw) return false;
+    const saved = JSON.parse(raw);
+    return !!(
+      saved &&
+      typeof saved.message === "string" &&
+      saved.message.trim().length > 0 &&
+      saved.message.length <= 4000 &&
+      typeof saved.at === "number" &&
+      Date.now() - saved.at >= 0 &&
+      Date.now() - saved.at < 30 * 60000
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function isValidHandoffId(id: string | null | undefined): boolean {
+  return typeof id === "string" && /^[0-9a-f-]{36}$/i.test(id.trim());
 }
 
 export function handoffMessage() {
@@ -167,22 +190,35 @@ let assignment: Promise<AssignmentResult> | undefined;
 export function handoffId() {
   const url = new URL(location.href);
   const existing = url.searchParams.get("atendimento");
-  if (existing && /^[0-9a-f-]{36}$/i.test(existing)) return existing;
+  if (existing && isValidHandoffId(existing)) return existing.trim();
   const id = crypto.randomUUID();
   url.searchParams.set("atendimento", id);
   history.replaceState(null, "", url.pathname + url.search + url.hash);
   return id;
 }
 
+export function getFixedAgent(): string | undefined {
+  try {
+    const url = new URL(location.href);
+    const candidate =
+      url.searchParams.get("atendente") ||
+      url.searchParams.get("agente") ||
+      sessionStorage.getItem("oncred_fixed_agent") ||
+      "";
+    const trimmed = candidate.trim();
+    if (!trimmed) return undefined;
+    // Nunca tratar UUID como identificador de atendente
+    if (/^[0-9a-f-]{36}$/i.test(trimmed)) return undefined;
+    return trimmed;
+  } catch {
+    return undefined;
+  }
+}
+
 export function assignAttendant() {
   if (!assignment) assignment = (async (): Promise<AssignmentResult> => {
     const handoff = handoffId();
-    const url = new URL(location.href);
-    const fixedAgent = url.searchParams.get("atendente") ||
-                       url.searchParams.get("atendimento") ||
-                       url.searchParams.get("agente") ||
-                       sessionStorage.getItem("oncred_fixed_agent") ||
-                       undefined;
+    const fixedAgent = getFixedAgent();
     let data: any;
     try {
       await initVisitor();
@@ -192,35 +228,37 @@ export function assignAttendant() {
         agent: fixedAgent,
       });
     } catch (e: any) {
-      // Fallback local caso o backend Cloudflare D1 não esteja ativo no preview local
-      try {
-        const localAgentsRaw = localStorage.getItem("oncred_local_agents");
-        if (localAgentsRaw) {
-          const localAgents = JSON.parse(localAgentsRaw);
-          if (Array.isArray(localAgents) && localAgents.length > 0) {
-            let selected = localAgents[0];
-            if (fixedAgent) {
-              const numMatch = fixedAgent.match(/(?:atendimento|atendente)?(\d+)/i);
-              const pos = numMatch ? parseInt(numMatch[1], 10) : -1;
-              const found = localAgents.find((a: any) =>
-                a.id === fixedAgent ||
-                a.position === pos ||
-                String(a.name).toLowerCase() === fixedAgent.toLowerCase() ||
-                `atendimento${a.position}` === fixedAgent.toLowerCase() ||
-                `atendente${a.position}` === fixedAgent.toLowerCase()
-              );
-              if (found) selected = found;
+      // 4) Fallback oncred_local_agents somente em import.meta.env.DEV e sem Lead.
+      if (Boolean(import.meta.env?.DEV)) {
+        try {
+          const localAgentsRaw = localStorage.getItem("oncred_local_agents");
+          if (localAgentsRaw) {
+            const localAgents = JSON.parse(localAgentsRaw);
+            if (Array.isArray(localAgents) && localAgents.length > 0) {
+              let selected = localAgents[0];
+              if (fixedAgent) {
+                const ordinalMatch = fixedAgent.match(/^(?:atendimento|atendente)?([1-9]\d*)$/i);
+                const pos = ordinalMatch ? parseInt(ordinalMatch[1], 10) : -1;
+                const found = localAgents.find((a: any) =>
+                  a.id === fixedAgent ||
+                  a.position === pos ||
+                  String(a.name).toLowerCase() === fixedAgent.toLowerCase() ||
+                  `atendimento${a.position}` === fixedAgent.toLowerCase() ||
+                  `atendente${a.position}` === fixedAgent.toLowerCase()
+                );
+                if (found) selected = found;
+              }
+              data = {
+                phone: selected.phone,
+                name: selected.name,
+                eventId: crypto.randomUUID(),
+                trackContact: false, // Sem Lead no fallback local
+                isDirect: !!fixedAgent,
+              };
             }
-            data = {
-              phone: selected.phone,
-              name: selected.name,
-              eventId: crypto.randomUUID(),
-              trackContact: true,
-              isDirect: !!fixedAgent,
-            };
           }
-        }
-      } catch {}
+        } catch {}
+      }
       if (!data) throw e;
     }
 
@@ -241,8 +279,14 @@ export function assignAttendant() {
   return assignment;
 }
 
-export async function trackAttendantEntry(data: { trackContact: boolean; eventId: string }) {
+export async function trackAttendantEntry(data: { href?: string; trackContact: boolean; eventId: string }) {
+  // 5) Garanta Lead apenas pathname /contato, destino válido, analytics autorizado e trackContact da API true, uma vez por atendimento, sem dados financeiros/pessoais.
+  const path = typeof location !== "undefined" ? (location.pathname || new URL(location.href).pathname) : "";
+  if (!/^\/contato(?:\/|$)/.test(path)) return;
+  if (!data.href || !data.href.startsWith("https://wa.me/")) return;
   if (!data.trackContact || !analyticsAllowed()) return;
+  if (!data.eventId) return;
+
   try {
     loadPixel();
     // A fresh routing page must give the asynchronous SDK time to initialize.
@@ -251,8 +295,8 @@ export async function trackAttendantEntry(data: { trackContact: boolean; eventId
       window.ttq?.ready(() => { window.clearTimeout(timer); resolve(); });
     });
     // Disparo oficial do Pixel TikTok ZM SCD (DBNB4HJC77U6ITB73GS0)
-    // Respeito rigoroso à LGPD: apenas evento Lead genérico deduplicado via event_id
-    // Sem envio de valor, parcelas, dados pessoais, telefone ou mensagens
+    // Apenas evento Lead genérico deduplicado via event_id
+    // Sem envio de valor, parcelas, dados pessoais, CPF, telefone ou mensagens
     window.ttq?.track("Lead", { content_name: "entrada_atendente" }, { event_id: data.eventId });
   } catch {}
 }

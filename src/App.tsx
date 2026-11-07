@@ -45,9 +45,11 @@ export default function App() {
   }
 
   // 3. Páginas Dedicadas de Atendente (/atendimento1, /atendimento2, /atendente1, /atendente2, etc.)
-  const agentMatch = path.match(/^\/(?:atendimento|atendente)(\d+|[a-z0-9_-]+)$/i);
-  const queryParam = new URLSearchParams(location.search).get("atendente") || new URLSearchParams(location.search).get("atendimento");
-  const fixedAgent = agentMatch ? agentMatch[0].replace(/^\//, '') : (queryParam || undefined);
+  const agentMatch = path.match(/^\/(?:atendimento|atendente)([1-9]\d*|[a-z0-9_-]+)$/i);
+  const queryParam = new URLSearchParams(location.search).get("atendente") || new URLSearchParams(location.search).get("agente");
+  // Nunca aceitar UUID de atendimento como identificador de atendente fixo
+  const validQueryAgent = queryParam && !/^[0-9a-f-]{36}$/i.test(queryParam.trim()) ? queryParam.trim() : undefined;
+  const fixedAgent = agentMatch ? agentMatch[0].replace(/^\//, '') : validQueryAgent;
 
   return <Landing fixedAgent={fixedAgent} />;
 }

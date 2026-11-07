@@ -38,10 +38,25 @@ function devApiPlugin() {
             let selected = devAgents[0];
             const specificAgent = data.agent ? String(data.agent).trim() : null;
             if (specificAgent) {
-              const numMatch = specificAgent.match(/(?:atendimento|atendente)?(\d+)/i);
-              const pos = numMatch ? parseInt(numMatch[1], 10) : -1;
-              const found = devAgents.find(a => a.id === specificAgent || a.position === pos || `atendimento${a.position}` === specificAgent.toLowerCase() || `atendente${a.position}` === specificAgent.toLowerCase());
-              if (found) selected = found;
+              const ordinalMatch = specificAgent.match(/^(?:atendimento|atendente)?([1-9]\d*)$/i);
+              const pos = ordinalMatch ? parseInt(ordinalMatch[1], 10) : -1;
+              const found = devAgents.find(a =>
+                a.id === specificAgent ||
+                a.position === pos ||
+                `atendimento${a.position}` === specificAgent.toLowerCase() ||
+                `atendente${a.position}` === specificAgent.toLowerCase()
+              );
+              if (!found || found.deleted) {
+                res.statusCode = 404;
+                res.end(JSON.stringify({ error: "Atendente não encontrado." }));
+                return;
+              }
+              if (!found.active) {
+                res.statusCode = 409;
+                res.end(JSON.stringify({ error: "Atendente temporariamente indisponível." }));
+                return;
+              }
+              selected = found;
             } else {
               selected = devAgents[cursor % devAgents.length];
               cursor++;

@@ -4,13 +4,33 @@ import { runInNewContext } from "node:vm";
 import { build } from "esbuild";
 import { randomUUID } from "node:crypto";
 
-const compiled = await build({ entryPoints: ["src/utils/atendimento.ts"], bundle: true, write: false, format: "cjs", platform: "browser", define: { 'import.meta.env.VITE_TIKTOK_PIXEL_ID': '"test-pixel"' } });
+const compiled = await build({
+  entryPoints: ["src/utils/atendimento.ts"],
+  bundle: true,
+  write: false,
+  format: "cjs",
+  platform: "browser",
+  define: {
+    'import.meta.env.VITE_TIKTOK_PIXEL_ID': '"test-pixel"',
+    'import.meta.env.DEV': 'false',
+  },
+});
 function browser() {
   const store = new Map(), calls = [], navigations = [], events = [];
   const context = {
     module: { exports: {} }, URL, navigator: {}, crypto: { randomUUID },
-    location: { pathname: "/", origin: "https://oncred-captacao.pages.dev", href: "https://oncred-captacao.pages.dev/?ttclid=campaign-test", assign: url => navigations.push(url) },
-    sessionStorage: { getItem: key => store.get(key) || null, setItem: (key, value) => store.set(key, value) },
+    location: {
+      get pathname() { return new URL(this.href, this.origin).pathname; },
+      get search() { return new URL(this.href, this.origin).search; },
+      origin: "https://oncred-captacao.pages.dev",
+      href: "https://oncred-captacao.pages.dev/?ttclid=campaign-test",
+      assign: url => navigations.push(url)
+    },
+    sessionStorage: {
+      getItem: key => store.get(key) || null,
+      setItem: (key, value) => store.set(key, value),
+      removeItem: key => store.delete(key),
+    },
     localStorage: { getItem: key => key === 'oncred_measurement' ? 'yes' : null },
     fetch: async (url, options) => {
       calls.push({ url, options });
@@ -53,6 +73,31 @@ test("simulação com atendente fixo encaminha para /contato com parâmetro aten
   assert.equal(target.searchParams.get("atendente"), "atendimento1");
 });
 
+test("getFixedAgent nunca confunde UUID de atendimento com agente fixo", () => {
+  const s = browser();
+  const uuid = randomUUID();
+  s.context.location.href = `https://oncred-captacao.pages.dev/contato?atendimento=${uuid}`;
+  assert.equal(s.api.getFixedAgent(), undefined, "UUID em atendimento não pode virar fixedAgent");
+
+  s.context.location.href = `https://oncred-captacao.pages.dev/contato?atendimento=${uuid}&atendente=atendimento2`;
+  assert.equal(s.api.getFixedAgent(), "atendimento2");
+
+  s.context.location.href = `https://oncred-captacao.pages.dev/contato?atendimento=${uuid}&agente=atendente3`;
+  assert.equal(s.api.getFixedAgent(), "atendente3");
+});
+
+test("validação de handoff recente protege acesso direto indevido", () => {
+  const s = browser();
+  assert.equal(s.api.hasValidRecentHandoff(), false);
+
+  s.store.set("oncred_handoff", JSON.stringify({ message: "Válido", at: Date.now() }));
+  assert.equal(s.api.hasValidRecentHandoff(), true);
+
+  // Expirado (> 30 min)
+  s.store.set("oncred_handoff", JSON.stringify({ message: "Expirado", at: Date.now() - 31 * 60000 }));
+  assert.equal(s.api.hasValidRecentHandoff(), false);
+});
+
 test("cada clique cria atendimento novo, mas recarga ou retry conserva a chave", async () => {
   const s = browser();
   await s.api.goToWhatsApp("teste");
@@ -86,16 +131,46 @@ test("falha de atendimento pode ser tentada novamente sem inventar número", asy
 });
 
 test("recusar medição mantém o encaminhamento e não emite Lead", async () => {
-  const s=browser();
-  s.context.localStorage.getItem=()=>"no";
-  const result=await s.api.assignAttendant();
-  assert.equal(new URL(result.href).hostname,"wa.me");
-  assert.equal(JSON.parse(s.calls.find(c=>c.url==="/api/route").options.body).analytics,false);
+  const s = browser();
+  s.context.location.href = "https://oncred-captacao.pages.dev/contato?atendimento=" + randomUUID();
+  s.context.localStorage.getItem = () => "no";
+  const result = await s.api.assignAttendant();
+  assert.equal(new URL(result.href).hostname, "wa.me");
+  assert.equal(JSON.parse(s.calls.find(c => c.url === "/api/route").options.body).analytics, false);
   await s.api.trackAttendantEntry(result);
-  assert.equal(s.events.length,0);
+  assert.equal(s.events.length, 0);
+});
+
+test("trackAttendantEntry só dispara se pathname for /contato e destino for WhatsApp válido", async () => {
+  const s = browser();
+  const validData = { href: "https://wa.me/551130420181?text=Ola", trackContact: true, eventId: "evt-123" };
+
+  // Fora de /contato -> não dispara
+  s.context.location.href = "https://oncred-captacao.pages.dev/";
+  await s.api.trackAttendantEntry(validData);
+  assert.equal(s.events.length, 0);
+
+  // No painel -> não dispara
+  s.context.location.href = "https://oncred-captacao.pages.dev/painel";
+  await s.api.trackAttendantEntry(validData);
+  assert.equal(s.events.length, 0);
+
+  // Destino inválido (não wa.me) -> não dispara
+  s.context.location.href = "https://oncred-captacao.pages.dev/contato";
+  await s.api.trackAttendantEntry({ ...validData, href: "https://google.com" });
+  assert.equal(s.events.length, 0);
+
+  // Em /contato com WhatsApp válido -> dispara Lead com event_id e sem dados financeiros
+  await s.api.trackAttendantEntry(validData);
+  assert.equal(s.events.length, 1);
+  assert.equal(s.events[0][0], "Lead");
+  assert.equal(s.events[0][1].content_name, "entrada_atendente");
+  assert.equal(s.events[0][2].event_id, "evt-123");
 });
 
 test("painel não permite medição mesmo com consentimento anterior", () => {
-  const s=browser();s.context.location.pathname="/painel";
-  assert.equal(s.api.analyticsAllowed(),false);
+  const s = browser();
+  s.context.location.href = "https://oncred-captacao.pages.dev/painel";
+  assert.equal(s.api.analyticsAllowed(), false);
 });
+
