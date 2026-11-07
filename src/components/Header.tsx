@@ -33,7 +33,7 @@ export const Header: React.FC<HeaderProps> = ({ onScrollToSimulator }) => {
         {/* Zone 2: Navigation Links (single-line, clean) */}
         <nav className="hidden lg:flex items-center gap-6 text-sm font-medium text-slate-300">
           <a
-            href="#simulador"
+            href="/simulacao"
             className="hover:text-emerald-400 transition-colors whitespace-nowrap shrink-0"
           >
             Simulador

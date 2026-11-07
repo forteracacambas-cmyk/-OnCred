@@ -72,7 +72,7 @@ export default function AttendantRedirect() {
             Para falar com um de nossos atendentes, realize primeiro a sua simulação de crédito personalizada.
           </p>
           <a
-            href="/#simulador"
+            href="/simulacao"
             className="block w-full rounded-xl bg-blue-600 px-5 py-4 font-bold text-white hover:bg-blue-500 transition-colors shadow-lg shadow-blue-600/30"
           >
             Voltar ao simulador
@@ -109,7 +109,7 @@ export default function AttendantRedirect() {
         {href && <p className="text-xs text-slate-400 mt-3">Se o aplicativo não abrir automaticamente, toque no botão acima.</p>}
         {error && <button onClick={() => setAttempt(v => v + 1)} className="w-full rounded-xl bg-blue-600 px-5 py-4 font-bold hover:bg-blue-500">Tentar novamente</button>}
         {error && <a href="https://zmscd.online/" className="block mt-4 underline text-blue-200">Consultar os canais institucionais da ZM SCD</a>}
-        <a href="/#simulador" className="inline-block mt-6 text-sm text-slate-300 underline">Voltar ao simulador</a>
+        <a href="/simulacao" className="inline-block mt-6 text-sm text-slate-300 underline">Voltar ao simulador</a>
       </section>
     </main>
   );

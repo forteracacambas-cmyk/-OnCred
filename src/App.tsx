@@ -22,6 +22,7 @@ import { TermsOfUseModal } from './components/TermsOfUseModal';
 
 const AttendantPanel = lazy(() => import('./components/AttendantPanel'));
 const AttendantRedirect = lazy(() => import('./components/AttendantRedirect'));
+const SimulationFunnelPage = lazy(() => import('./components/SimulationFunnelPage'));
 
 export default function App() {
   const path = location.pathname.toLowerCase().replace(/\/$/, "");
@@ -44,12 +45,22 @@ export default function App() {
     );
   }
 
-  // 3. Páginas Dedicadas de Atendente (/atendimento1, /atendimento2, /atendente1, /atendente2, etc.)
-  const agentMatch = path.match(/^\/(?:atendimento|atendente)([1-9]\d*|[a-z0-9_-]+)$/i);
-  const queryParam = new URLSearchParams(location.search).get("atendente") || new URLSearchParams(location.search).get("agente");
+  // 3. Páginas Dedicadas de Atendente e Detecção de Agente
+  const agentPathMatch = path.match(/^\/(?:atendimento|atendente)([1-9]\d*|[a-z0-9_-]+)(?:\/simulacao)?$/i);
+  const queryParam = new URLSearchParams(location.search).get("atendente") || new URLSearchParams(location.search).get("agente") || (typeof sessionStorage !== 'undefined' ? sessionStorage.getItem("oncred_fixed_agent") : null);
   // Nunca aceitar UUID de atendimento como identificador de atendente fixo
   const validQueryAgent = queryParam && !/^[0-9a-f-]{36}$/i.test(queryParam.trim()) ? queryParam.trim() : undefined;
-  const fixedAgent = agentMatch ? agentMatch[0].replace(/^\//, '') : validQueryAgent;
+  const fixedAgent = agentPathMatch ? agentPathMatch[0].replace(/^\//, '').replace(/\/simulacao$/i, '') : validQueryAgent;
+
+  // 4. Página Isolada de Simulação (/simulacao, /simular, ou /atendimentoN/simulacao)
+  const isSimulation = path === "/simulacao" || path === "/simular" || /\/simulacao$/i.test(path);
+  if (isSimulation) {
+    return (
+      <Suspense fallback={<div className="min-h-screen bg-slate-950 text-white flex items-center justify-center p-6"><p className="font-mono text-sm">Carregando simulador…</p></div>}>
+        <SimulationFunnelPage fixedAgent={fixedAgent} />
+      </Suspense>
+    );
+  }
 
   return <Landing fixedAgent={fixedAgent} />;
 }
