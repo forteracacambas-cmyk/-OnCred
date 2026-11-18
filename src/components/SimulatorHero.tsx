@@ -15,9 +15,10 @@ interface SimulatorHeroProps {
   onOpenConfig?: () => void;
   fixedAgent?: string;
   fixedTeam?: string;
+  teamName?: string;
 }
 
-export const SimulatorHero: React.FC<SimulatorHeroProps> = ({ fixedAgent, fixedTeam }) => {
+export const SimulatorHero: React.FC<SimulatorHeroProps> = ({ fixedAgent, fixedTeam, teamName }) => {
   useEffect(() => {
     initVisitor().catch(() => {});
     trackEvent('page_view');
@@ -60,12 +61,21 @@ export const SimulatorHero: React.FC<SimulatorHeroProps> = ({ fixedAgent, fixedT
       <div className="relative max-w-3xl mx-auto px-3.5 sm:px-6 w-full">
         <div className="text-center max-w-2xl mx-auto animate-in fade-in duration-300 py-4 sm:py-8">
           {/* Trust badge */}
-          <div className="inline-flex items-center justify-center gap-1.5 px-3.5 py-1.5 rounded-full bg-emerald-950/60 border border-emerald-500/30 text-center shadow-sm mb-4 sm:mb-6">
+          <div className="inline-flex items-center justify-center gap-1.5 px-3.5 py-1.5 rounded-full bg-emerald-950/60 border border-emerald-500/30 text-center shadow-sm mb-3 sm:mb-5">
             <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
             <span className="text-[11px] sm:text-xs text-emerald-200 font-medium">
               ZM Sociedade de Crédito Direto • Regulada pelo Banco Central • 18+
             </span>
           </div>
+
+          {teamName && !fixedAgent && (
+            <div className="mb-3 sm:mb-4">
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-900/90 border border-emerald-500/40 text-emerald-300 text-[11px] font-semibold tracking-wide">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                Canal dedicado • {teamName}
+              </span>
+            </div>
+          )}
 
           {/* Headline com tipografia balanceada */}
           <h1 className="text-2xl sm:text-4xl md:text-5xl font-extrabold tracking-tight text-white mb-4 sm:mb-6 leading-tight" style={{ textWrap: 'balance' }}>

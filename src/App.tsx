@@ -121,7 +121,7 @@ function Landing({ fixedAgent, fixedTeam }: { fixedAgent?: string; fixedTeam?: s
     let alive = true;
     (async () => {
       try {
-        const res = await fetch(`/api/team?slug=${encodeURIComponent(fixedTeam)}`, {
+        const res = await fetch(`/api/team?slug=${encodeURIComponent(fixedTeam)}&_t=${Date.now()}`, {
           cache: 'no-store',
         });
         if (!res.headers.get('Content-Type')?.includes('application/json')) return;
@@ -224,6 +224,7 @@ function Landing({ fixedAgent, fixedTeam }: { fixedAgent?: string; fixedTeam?: s
           onOpenPrivacy={() => setIsPrivacyOpen(true)}
           fixedAgent={fixedAgent}
           fixedTeam={fixedTeam}
+          teamName={teamCheck.status === 'online' ? teamCheck.name : undefined}
         />
 
         {/* 3-Step Clear Process */}

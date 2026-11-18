@@ -150,7 +150,8 @@ export default function AttendantPanel() {
     [batch, setBatch] = useState(1),
     [period, setPeriod] = useState("today"),
     [stats, setStats] = useState<any>(null),
-    [copiedLink, setCopiedLink] = useState<string | null>(null);
+    [copiedLink, setCopiedLink] = useState<string | null>(null),
+    [verifiedTeams, setVerifiedTeams] = useState<Record<string, { online: boolean; agentCount: number }>>({});
 
   // Agent form state
   const [editing, setEditing] = useState<Agent | null>(null),
@@ -226,6 +227,28 @@ export default function AttendantPanel() {
     } catch {}
   };
 
+  const verifyTeamsOnServer = async (loadedTeams: Team[]) => {
+    if (!loadedTeams.length) {
+      setVerifiedTeams({});
+      return;
+    }
+    const entries = await Promise.all(
+      loadedTeams.map(async (t) => {
+        try {
+          const res = await fetch(`/api/team?slug=${encodeURIComponent(t.slug)}&_t=${Date.now()}`, {
+            cache: "no-store",
+          });
+          if (!res.ok) return [t.id, { online: false, agentCount: 0 }] as const;
+          const info = await res.json();
+          return [t.id, { online: !!info.online, agentCount: Number(info.agentCount || 0) }] as const;
+        } catch {
+          return [t.id, { online: false, agentCount: 0 }] as const;
+        }
+      }),
+    );
+    setVerifiedTeams(Object.fromEntries(entries));
+  };
+
   const refresh = async () => {
     const [config, totals] = await Promise.all([
       request("config"),
@@ -233,6 +256,7 @@ export default function AttendantPanel() {
     ]);
     applyServerSnapshot(config);
     setStats(totals);
+    verifyTeamsOnServer(config.teams || []).catch(() => {});
   };
 
   useEffect(() => {
@@ -520,6 +544,7 @@ export default function AttendantPanel() {
         teams: saved.teams,
       });
       setStats(totals);
+      await verifyTeamsOnServer(saved.teams || []);
 
       const emptyTeams = (saved.teams || []).filter(
         (t: Team) =>
@@ -531,7 +556,7 @@ export default function AttendantPanel() {
           `Alterações salvas e publicadas online! Atenção: a equipe "${emptyTeams.map((t: Team) => t.name).join('", "')}" ainda está sem atendentes ativos — arraste pelo menos 1 número para ela e salve novamente.`,
         );
       } else {
-        setNotice("Todas as alterações foram salvas e já estão ONLINE!");
+        setNotice("Todas as alterações foram salvas e confirmadas ONLINE no servidor!");
       }
     });
 
@@ -589,6 +614,10 @@ export default function AttendantPanel() {
         <span>
           {isDirty
             ? "Você tem alterações pendentes — clique em \"Salvar alterações\" para ficar online."
+            : error
+            ? error
+            : notice
+            ? notice
             : "Tudo salvo e online no momento."}
         </span>
       </div>
@@ -1051,6 +1080,7 @@ export default function AttendantPanel() {
 
                   let statusLabel = "";
                   let statusClass = "online";
+                  const serverStatus = verifiedTeams[t.id];
                   if (isTeamUnsaved) {
                     statusLabel = "Pendente — clique em Salvar";
                     statusClass = "pending";
@@ -1061,7 +1091,9 @@ export default function AttendantPanel() {
                     statusLabel = "Sem atendentes";
                     statusClass = "empty";
                   } else {
-                    statusLabel = `Online (${teamActiveCount} ativo${teamActiveCount > 1 ? "s" : ""})`;
+                    statusLabel = serverStatus?.online
+                      ? `Online e confirmada (${teamActiveCount} ativo${teamActiveCount > 1 ? "s" : ""})`
+                      : `Online (${teamActiveCount} ativo${teamActiveCount > 1 ? "s" : ""})`;
                     statusClass = "online";
                   }
 

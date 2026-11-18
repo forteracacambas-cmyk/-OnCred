@@ -3,6 +3,11 @@
   X-Frame-Options: SAMEORIGIN
   Referrer-Policy: strict-origin-when-cross-origin
 
+/
+  Cache-Control: public, max-age=0, must-revalidate
+/index.html
+  Cache-Control: public, max-age=0, must-revalidate
+
 /painel*
   X-Robots-Tag: noindex, nofollow
   Cache-Control: no-store
@@ -12,3 +17,4 @@
 /atendente*
   X-Robots-Tag: noindex, nofollow
   Cache-Control: no-store
+
