@@ -174,3 +174,36 @@ test("painel não permite medição mesmo com consentimento anterior", () => {
   assert.equal(s.api.analyticsAllowed(), false);
 });
 
+test("simulação com equipe encaminha para /contato com parâmetro equipe e envia team ao /api/route", async () => {
+  const s = browser();
+  await s.api.goToWhatsApp("Teste equipe", undefined, "equipe1");
+  const target = new URL(s.navigations[0], s.context.location.origin);
+  assert.equal(target.pathname, "/contato");
+  assert.equal(target.searchParams.get("equipe"), "equipe1");
+  assert.equal(target.searchParams.get("atendente"), null);
+  assert.equal(s.store.get("oncred_fixed_team"), "equipe1");
+
+  s.context.location.href = target.href;
+  await s.api.assignAttendant();
+  const routePayload = JSON.parse(s.calls.find(c => c.url === "/api/route").options.body);
+  assert.equal(routePayload.team, "equipe1");
+  assert.equal(routePayload.agent, undefined);
+});
+
+test("getFixedTeam rejeita UUIDs e dá prioridade para atendente fixo", () => {
+  const s = browser();
+  const uuid = randomUUID();
+  s.context.location.href = `https://oncred-captacao.pages.dev/contato?atendimento=${uuid}&equipe=${uuid}`;
+  assert.equal(s.api.getFixedTeam(), undefined, "UUID em equipe deve ser rejeitado");
+
+  s.context.location.href = `https://oncred-captacao.pages.dev/contato?atendimento=${uuid}&equipe=comercial`;
+  assert.equal(s.api.getFixedTeam(), "comercial");
+
+  s.context.location.href = `https://oncred-captacao.pages.dev/contato?atendimento=${uuid}&team=consignado`;
+  assert.equal(s.api.getFixedTeam(), "consignado");
+
+  // Quando atendente fixo está presente, getFixedTeam retorna undefined
+  s.context.location.href = `https://oncred-captacao.pages.dev/contato?atendimento=${uuid}&atendente=atendimento1&equipe=comercial`;
+  assert.equal(s.api.getFixedAgent(), "atendimento1");
+  assert.equal(s.api.getFixedTeam(), undefined);
+});

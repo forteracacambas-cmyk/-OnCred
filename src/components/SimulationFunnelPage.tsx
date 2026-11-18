@@ -29,9 +29,10 @@ import { MeasurementConsent } from './MeasurementConsent';
 
 interface SimulationFunnelPageProps {
   fixedAgent?: string;
+  fixedTeam?: string;
 }
 
-export default function SimulationFunnelPage({ fixedAgent }: SimulationFunnelPageProps) {
+export default function SimulationFunnelPage({ fixedAgent, fixedTeam }: SimulationFunnelPageProps) {
   // Inicializa o passo a partir da URL (?passo=X ou ?etapa=X) se houver
   const getInitialStep = (): 1 | 2 | 3 | 4 => {
     try {
@@ -61,7 +62,19 @@ export default function SimulationFunnelPage({ fixedAgent }: SimulationFunnelPag
   useEffect(() => {
     initVisitor().catch(() => {});
     document.title = "Simulação de Crédito Online | ZM SCD";
-  }, []);
+    try {
+      if (!fixedAgent && !fixedTeam) {
+        sessionStorage.removeItem("oncred_fixed_agent");
+        sessionStorage.removeItem("oncred_fixed_team");
+      } else if (fixedAgent) {
+        sessionStorage.setItem("oncred_fixed_agent", fixedAgent);
+        sessionStorage.removeItem("oncred_fixed_team");
+      } else if (fixedTeam) {
+        sessionStorage.setItem("oncred_fixed_team", fixedTeam);
+        sessionStorage.removeItem("oncred_fixed_agent");
+      }
+    } catch {}
+  }, [fixedAgent, fixedTeam]);
 
   // Sincroniza o número da etapa com a URL para permitir navegação natural (botão voltar do celular)
   useEffect(() => {
@@ -159,7 +172,7 @@ export default function SimulationFunnelPage({ fixedAgent }: SimulationFunnelPag
     routingRef.current = true;
     setRouting(true);
     try {
-      await goToWhatsApp(message, fixedAgent);
+      await goToWhatsApp(message, fixedAgent, fixedTeam);
     } catch (err) {
       setValidationError(err instanceof Error ? err.message : 'Não foi possível encaminhar. Tente novamente.');
     } finally {
@@ -168,7 +181,12 @@ export default function SimulationFunnelPage({ fixedAgent }: SimulationFunnelPag
     }
   };
 
-  const returnHomeUrl = fixedAgent && !/^[0-9a-f-]{36}$/i.test(fixedAgent) ? `/${fixedAgent}` : '/';
+  const returnHomeUrl =
+    fixedAgent && !/^[0-9a-f-]{36}$/i.test(fixedAgent)
+      ? `/${fixedAgent}`
+      : fixedTeam && !/^[0-9a-f-]{36}$/i.test(fixedTeam)
+      ? `/${fixedTeam}`
+      : '/';
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-emerald-500 selection:text-slate-950">

@@ -33,7 +33,20 @@ export const Header: React.FC<HeaderProps> = ({ onScrollToSimulator }) => {
         {/* Zone 2: Navigation Links (single-line, clean) */}
         <nav className="hidden lg:flex items-center gap-6 text-sm font-medium text-slate-300">
           <a
-            href="/simulacao"
+            href={(() => {
+              if (typeof window === 'undefined') return '/simulacao';
+              const p = window.location.pathname.toLowerCase().replace(/\/$/, '');
+              const sp = new URLSearchParams(window.location.search);
+              const qAgent = sp.get('atendente') || sp.get('agente');
+              const qTeam = sp.get('equipe') || sp.get('team');
+              if (/^\/(?:atendimento|atendente)[a-z0-9_-]+$/i.test(p)) return `/simulacao?atendente=${encodeURIComponent(p.slice(1))}`;
+              if (qAgent) return `/simulacao?atendente=${encodeURIComponent(qAgent)}`;
+              if (p && !['', '/simulacao', '/simular', '/contato', '/painel', '/politica-de-privacidade', '/termos-de-uso'].includes(p)) {
+                return `/simulacao?equipe=${encodeURIComponent(p.slice(1))}`;
+              }
+              if (qTeam) return `/simulacao?equipe=${encodeURIComponent(qTeam)}`;
+              return '/simulacao';
+            })()}
             className="hover:text-emerald-400 transition-colors whitespace-nowrap shrink-0"
           >
             Simulador

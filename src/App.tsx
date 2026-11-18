@@ -45,29 +45,66 @@ export default function App() {
     );
   }
 
-  // 3. Páginas Dedicadas de Atendente e Detecção de Agente
-  const agentPathMatch = path.match(/^\/(?:atendimento|atendente)([1-9]\d*|[a-z0-9_-]+)(?:\/simulacao)?$/i);
-  const queryParam = new URLSearchParams(location.search).get("atendente") || new URLSearchParams(location.search).get("agente") || (typeof sessionStorage !== 'undefined' ? sessionStorage.getItem("oncred_fixed_agent") : null);
-  // Nunca aceitar UUID de atendimento como identificador de atendente fixo
-  const validQueryAgent = queryParam && !/^[0-9a-f-]{36}$/i.test(queryParam.trim()) ? queryParam.trim() : undefined;
-  const fixedAgent = agentPathMatch ? agentPathMatch[0].replace(/^\//, '').replace(/\/simulacao$/i, '') : validQueryAgent;
+  // 3. Páginas Dedicadas de Atendente (/atendimento1) e Equipes (/equipe1, /vendas, etc.)
+  const searchParams = new URLSearchParams(location.search);
+  const basePath = path.replace(/\/simulacao$/i, "");
+  const agentPathMatch = basePath.match(/^\/(?:atendimento|atendente)([1-9]\d*|[a-z0-9_-]+)$/i);
 
-  // 4. Página Isolada de Simulação (/simulacao, /simular, ou /atendimentoN/simulacao)
+  const queryAgent = searchParams.get("atendente") || searchParams.get("agente");
+  const validQueryAgent = queryAgent && !/^[0-9a-f-]{36}$/i.test(queryAgent.trim()) ? queryAgent.trim() : undefined;
+  const fixedAgent = agentPathMatch ? basePath.slice(1) : validQueryAgent;
+
+  const reservedPaths = new Set([
+    "",
+    "/simulacao",
+    "/simular",
+    "/politica-de-privacidade",
+    "/termos-de-uso",
+    "/index.html",
+  ]);
+  const teamPathMatch =
+    !agentPathMatch &&
+    !reservedPaths.has(basePath) &&
+    /^\/[a-z0-9][a-z0-9_-]{0,48}$/i.test(basePath)
+      ? basePath.slice(1)
+      : undefined;
+
+  const queryTeam = searchParams.get("equipe") || searchParams.get("team");
+  const validQueryTeam = queryTeam && !/^[0-9a-f-]{36}$/i.test(queryTeam.trim()) ? queryTeam.trim() : undefined;
+  const fixedTeam = !fixedAgent ? (teamPathMatch || validQueryTeam) : undefined;
+
+  // 4. Página Isolada de Simulação (/simulacao, /simular, /equipe1/simulacao, /atendimentoN/simulacao)
   const isSimulation = path === "/simulacao" || path === "/simular" || /\/simulacao$/i.test(path);
   if (isSimulation) {
     return (
       <Suspense fallback={<div className="min-h-screen bg-slate-950 text-white flex items-center justify-center p-6"><p className="font-mono text-sm">Carregando simulador…</p></div>}>
-        <SimulationFunnelPage fixedAgent={fixedAgent} />
+        <SimulationFunnelPage fixedAgent={fixedAgent} fixedTeam={fixedTeam} />
       </Suspense>
     );
   }
 
-  return <Landing fixedAgent={fixedAgent} />;
+  return <Landing fixedAgent={fixedAgent} fixedTeam={fixedTeam} />;
 }
 
-function Landing({ fixedAgent }: { fixedAgent?: string }) {
+function Landing({ fixedAgent, fixedTeam }: { fixedAgent?: string; fixedTeam?: string }) {
   const [isPrivacyOpen, setIsPrivacyOpen] = useState(false);
   const [isTermsOpen, setIsTermsOpen] = useState(false);
+
+  // Garante que visitas à URL principal (/) não herdem equipe/atendente antigos da sessão
+  useEffect(() => {
+    try {
+      if (!fixedAgent && !fixedTeam) {
+        sessionStorage.removeItem("oncred_fixed_agent");
+        sessionStorage.removeItem("oncred_fixed_team");
+      } else if (fixedAgent) {
+        sessionStorage.setItem("oncred_fixed_agent", fixedAgent);
+        sessionStorage.removeItem("oncred_fixed_team");
+      } else if (fixedTeam) {
+        sessionStorage.setItem("oncred_fixed_team", fixedTeam);
+        sessionStorage.removeItem("oncred_fixed_agent");
+      }
+    } catch {}
+  }, [fixedAgent, fixedTeam]);
 
   // Detectar rota no pathname ou hash para abrir páginas legais automaticamente
   useEffect(() => {
@@ -114,6 +151,7 @@ function Landing({ fixedAgent }: { fixedAgent?: string }) {
         <SimulatorHero
           onOpenPrivacy={() => setIsPrivacyOpen(true)}
           fixedAgent={fixedAgent}
+          fixedTeam={fixedTeam}
         />
 
         {/* 3-Step Clear Process */}

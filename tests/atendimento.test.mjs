@@ -14,6 +14,11 @@ const source = await build({
   platform: "browser",
 });
 const schema = (
+  (await readFile("migrations/0001_atendimento.sql", "utf8")) +
+  "\n" +
+  (await readFile("migrations/0002_equipes.sql", "utf8"))
+).replace(/--[^\n]*/g, "");
+const legacySchema = (
   await readFile("migrations/0001_atendimento.sql", "utf8")
 ).replace(/--[^\n]*/g, "");
 
@@ -48,7 +53,7 @@ function statements(text) {
   }
   return result;
 }
-async function setup(t) {
+async function setup(t, initialSql = schema) {
   const mf = new Miniflare({
     workers: [
       {
@@ -63,7 +68,9 @@ async function setup(t) {
   });
   t.after(() => mf.dispose());
   const db = await mf.getD1Database("DB");
-  for (const s of statements(schema)) await db.prepare(s).run();
+  for (const s of statements(initialSql)) {
+    if (s) await db.prepare(s).run();
+  }
   const call = async (
     path,
     {
@@ -411,4 +418,93 @@ test("retentativas na rota específica retornam o eventId persistido original e 
   assert.equal(retry.data.eventId, originalEventId, "eventId deve ser o persistido original");
   assert.equal(retry.data.trackContact, false, "trackContact deve ser false em retry");
 });
+
+test("equipes isolam o rodízio por URL (/equipe1, /equipe2) mantendo o site principal separado", async (t) => {
+  const s = await setup(t);
+  const g1 = await s.add("Geral 1", "11999990001");
+  const g2 = await s.add("Geral 2", "11999990002");
+  const e1a = await s.add("Equipe 1 A", "11999991001");
+  const e1b = await s.add("Equipe 1 B", "11999991002");
+  const e2a = await s.add("Equipe 2 A", "11999992001");
+
+  // Cria equipe1 e equipe2
+  const t1Res = await s.admin("teams", "POST", { name: "Equipe 1", slug: "equipe1", batchSize: 1 });
+  assert.equal(t1Res.status, 200);
+  const t1 = t1Res.data.team;
+
+  const t2Res = await s.admin("teams", "POST", { name: "Equipe 2", slug: "equipe2", batchSize: 2 });
+  assert.equal(t2Res.status, 200);
+  const t2 = t2Res.data.team;
+
+  // Slugs reservados e duplicados devem ser recusados
+  assert.equal((await s.admin("teams", "POST", { name: "Painel", slug: "painel" })).status, 400);
+  assert.equal((await s.admin("teams", "POST", { name: "Atend", slug: "atendimento1" })).status, 400);
+  assert.equal((await s.admin("teams", "POST", { name: "Duplicada", slug: "equipe1" })).status, 409);
+
+  // Move (simula arrastar) os atendentes para as equipes
+  assert.equal((await s.admin("agents/move", "POST", { agentId: e1a.id, teamId: t1.id })).status, 200);
+  assert.equal((await s.admin("agents/move", "POST", { agentId: e1b.id, teamId: t1.id })).status, 200);
+  assert.equal((await s.admin("agents/move", "POST", { agentId: e2a.id, teamId: t2.id })).status, 200);
+
+  // Site principal gira apenas entre Geral 1 e Geral 2
+  const vG1 = await s.visitor();
+  const vG2 = await s.visitor();
+  const vG3 = await s.visitor();
+  assert.equal((await s.route(vG1)).data.phone, g1.phone);
+  assert.equal((await s.route(vG2)).data.phone, g2.phone);
+  assert.equal((await s.route(vG3)).data.phone, g1.phone);
+
+  // Equipe 1 gira apenas entre Equipe 1 A e Equipe 1 B
+  const routeTeam = async (teamSlug) => {
+    const c = await s.visitor();
+    return s.call("route", {
+      method: "POST",
+      cookie: c,
+      body: { analytics: true, handoffId: crypto.randomUUID(), team: teamSlug },
+    });
+  };
+  const r1 = await routeTeam("equipe1");
+  const r2 = await routeTeam("equipe1");
+  const r3 = await routeTeam("equipe1");
+  assert.equal(r1.status, 200);
+  assert.equal(r1.data.phone, e1a.phone);
+  assert.equal(r1.data.teamName, "Equipe 1");
+  assert.equal(r1.data.isTeam, true);
+  assert.equal(r2.data.phone, e1b.phone);
+  assert.equal(r3.data.phone, e1a.phone);
+
+  // Equipe 2 vai apenas para e2a
+  const r4 = await routeTeam("equipe2");
+  assert.equal(r4.status, 200);
+  assert.equal(r4.data.phone, e2a.phone);
+
+  // Equipe pausada -> 409; equipe inexistente -> 404
+  await s.admin("teams/" + t2.id, "PUT", { name: t2.name, slug: t2.slug, batchSize: t2.batch_size, active: false });
+  assert.equal((await routeTeam("equipe2")).status, 409);
+  assert.equal((await routeTeam("equipe-inexistente")).status, 404);
+
+  // Excluir equipe devolve seus atendentes ao Site Principal
+  await s.admin("teams/" + t2.id, "DELETE");
+  const cfg = (await s.admin("config")).data;
+  const movedBack = cfg.agents.find((a) => a.id === e2a.id);
+  assert.equal(movedBack.team_id, null);
+});
+
+test("banco legado (apenas 0001) é atualizado automaticamente para suportar equipes", async (t) => {
+  const s = await setup(t, legacySchema);
+  const a1 = await s.add("Legado 1", "11999998888");
+  const t1 = await s.admin("teams", "POST", { name: "Equipe Auto", slug: "auto" });
+  assert.equal(t1.status, 200);
+  await s.admin("agents/move", "POST", { agentId: a1.id, teamId: t1.data.team.id });
+
+  const c = await s.visitor();
+  const r = await s.call("route", {
+    method: "POST",
+    cookie: c,
+    body: { analytics: true, handoffId: crypto.randomUUID(), team: "auto" },
+  });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.phone, a1.phone);
+});
+
 

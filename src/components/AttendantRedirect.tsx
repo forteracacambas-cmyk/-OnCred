@@ -6,6 +6,7 @@ export default function AttendantRedirect() {
   const [error, setError] = useState("");
   const [attempt, setAttempt] = useState(0);
   const [agentName, setAgentName] = useState("");
+  const [teamName, setTeamName] = useState("");
   const [isDirect, setIsDirect] = useState(false);
   const [noHandoff, setNoHandoff] = useState(false);
   const opening = useRef(false);
@@ -36,6 +37,7 @@ export default function AttendantRedirect() {
         if (!alive) return;
         setHref(data.href);
         if (data.agentName) setAgentName(data.agentName);
+        if (data.teamName) setTeamName(data.teamName);
         if (data.isDirect) setIsDirect(true);
         await trackAttendantEntry(data);
         if (alive && !opening.current) {
@@ -45,9 +47,9 @@ export default function AttendantRedirect() {
       } catch (e: any) {
         if (alive) {
           if (e && e.status === 404) {
-            setError("Atendente não encontrado. Faça uma nova simulação.");
+            setError(e.message || "Atendimento não encontrado. Faça uma nova simulação.");
           } else if (e && e.status === 409) {
-            setError("Atendente temporariamente indisponível no momento.");
+            setError(e.message || "Atendimento temporariamente indisponível no momento.");
           } else {
             setError(e instanceof Error ? e.message : "Não foi possível conectar. Tente novamente.");
           }
@@ -97,11 +99,15 @@ export default function AttendantRedirect() {
             ? "Abrindo seu WhatsApp"
             : isDirect && agentName
             ? `Conectando com ${agentName}`
+            : teamName
+            ? `Conectando à ${teamName}`
             : "Conectando ao atendimento"}
         </h1>
         <p role={error ? "alert" : "status"} aria-live="polite" className="text-slate-300 leading-relaxed mb-6">
           {error || (isDirect && agentName
             ? `Direcionando você para o WhatsApp exclusivo de ${agentName}. Sua simulação está pronta para envio.`
+            : teamName
+            ? `Estamos direcionando você para um especialista da ${teamName}. Sua mensagem está pronta para continuar.`
             : "Estamos direcionando você para um atendente disponível. Sua mensagem está pronta para continuar.")}
         </p>
         {/* Pixel de conversão ativado automaticamente nesta página (/contato) */}

@@ -10,6 +10,167 @@ const fail = (message, status = 400) => {
 };
 const uuid = () => crypto.randomUUID();
 const validID = (v) => typeof v === "string" && /^[0-9a-f-]{36}$/i.test(v);
+
+const RESERVED_TEAM_SLUGS = new Set([
+  "painel",
+  "contato",
+  "simulacao",
+  "simular",
+  "api",
+  "atendente",
+  "atendimento",
+  "politica-de-privacidade",
+  "termos-de-uso",
+  "assets",
+  "doc",
+  "favicon",
+  "robots",
+  "sitemap",
+]);
+
+export function normalizeTeamSlug(input) {
+  const s = String(input || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  if (
+    !s ||
+    !/^[a-z0-9][a-z0-9_-]{0,48}$/.test(s) ||
+    RESERVED_TEAM_SLUGS.has(s) ||
+    /^atend(?:imento|ente)\d+$/i.test(s)
+  ) {
+    fail(
+      "URL da equipe inválida ou reservada. Use apenas letras minúsculas, números, '-' ou '_' (ex: equipe1, vendas).",
+    );
+  }
+  return s;
+}
+
+const ROUTE_AVAILABLE_TRIGGER_SQL = `CREATE TRIGGER route_available BEFORE INSERT ON route_requests
+WHEN (NEW.team_id IS NULL AND NOT EXISTS(SELECT 1 FROM agents WHERE active=1 AND deleted=0 AND team_id IS NULL))
+  OR (NEW.team_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM agents WHERE active=1 AND deleted=0 AND team_id=NEW.team_id))
+BEGIN SELECT RAISE(ABORT,'NO_AGENTS'); END`;
+
+const ROUTE_ASSIGN_TRIGGER_SQL = `CREATE TRIGGER route_assign AFTER INSERT ON route_requests
+BEGIN
+ INSERT INTO visitors(id,event_id,created_at) VALUES(NEW.visitor_id,NEW.event_id,NEW.at) ON CONFLICT(id) DO NOTHING;
+
+ UPDATE settings SET
+  cursor_agent=CASE
+   WHEN used<batch_size AND EXISTS(SELECT 1 FROM agents WHERE id=cursor_agent AND active=1 AND deleted=0 AND team_id IS NULL)
+   THEN cursor_agent
+   ELSE COALESCE(
+    (SELECT a.id FROM agents a WHERE a.active=1 AND a.deleted=0 AND a.team_id IS NULL AND
+     (a.position>COALESCE((SELECT position FROM agents WHERE id=cursor_agent AND team_id IS NULL),-1)
+      OR (a.position=(SELECT position FROM agents WHERE id=cursor_agent AND team_id IS NULL) AND a.id>cursor_agent))
+     ORDER BY a.position,a.id LIMIT 1),
+    (SELECT id FROM agents WHERE active=1 AND deleted=0 AND team_id IS NULL ORDER BY position,id LIMIT 1))
+  END,
+  used=CASE
+   WHEN used<batch_size AND EXISTS(SELECT 1 FROM agents WHERE id=cursor_agent AND active=1 AND deleted=0 AND team_id IS NULL)
+   THEN used ELSE 0
+  END
+ WHERE id=1
+  AND NEW.team_id IS NULL
+  AND NOT EXISTS(SELECT 1 FROM visitors v JOIN agents a ON a.id=v.agent_id WHERE v.id=NEW.visitor_id AND a.active=1 AND a.deleted=0 AND a.team_id IS NULL);
+
+ UPDATE teams SET
+  cursor_agent=CASE
+   WHEN used<batch_size AND EXISTS(SELECT 1 FROM agents WHERE id=cursor_agent AND active=1 AND deleted=0 AND team_id=NEW.team_id)
+   THEN cursor_agent
+   ELSE COALESCE(
+    (SELECT a.id FROM agents a WHERE a.active=1 AND a.deleted=0 AND a.team_id=NEW.team_id AND
+     (a.position>COALESCE((SELECT position FROM agents WHERE id=cursor_agent AND team_id=NEW.team_id),-1)
+      OR (a.position=(SELECT position FROM agents WHERE id=cursor_agent AND team_id=NEW.team_id) AND a.id>cursor_agent))
+     ORDER BY a.position,a.id LIMIT 1),
+    (SELECT id FROM agents WHERE active=1 AND deleted=0 AND team_id=NEW.team_id ORDER BY position,id LIMIT 1))
+  END,
+  used=CASE
+   WHEN used<batch_size AND EXISTS(SELECT 1 FROM agents WHERE id=cursor_agent AND active=1 AND deleted=0 AND team_id=NEW.team_id)
+   THEN used ELSE 0
+  END
+ WHERE id=NEW.team_id
+  AND NEW.team_id IS NOT NULL
+  AND NOT EXISTS(SELECT 1 FROM visitors v JOIN agents a ON a.id=v.agent_id WHERE v.id=NEW.visitor_id AND a.active=1 AND a.deleted=0 AND a.team_id=NEW.team_id);
+
+ UPDATE visitors SET
+  agent_id=CASE
+   WHEN NEW.team_id IS NULL THEN (SELECT cursor_agent FROM settings WHERE id=1)
+   ELSE (SELECT cursor_agent FROM teams WHERE id=NEW.team_id)
+  END,
+  route_token=NEW.id
+ WHERE id=NEW.visitor_id
+  AND NOT EXISTS(SELECT 1 FROM agents WHERE id=visitors.agent_id AND active=1 AND deleted=0 AND COALESCE(team_id,'')=COALESCE(NEW.team_id,''));
+
+ INSERT INTO deliveries(id,visitor_id,agent_id,created_at,first_delivery)
+ SELECT NEW.id,id,agent_id,NEW.at,NOT EXISTS(SELECT 1 FROM deliveries WHERE visitor_id=NEW.visitor_id)
+ FROM visitors WHERE id=NEW.visitor_id AND route_token=NEW.id;
+
+ UPDATE settings SET used=used+1
+ WHERE id=1 AND NEW.team_id IS NULL
+  AND EXISTS(SELECT 1 FROM visitors WHERE id=NEW.visitor_id AND route_token=NEW.id);
+
+ UPDATE teams SET used=used+1
+ WHERE id=NEW.team_id AND NEW.team_id IS NOT NULL
+  AND EXISTS(SELECT 1 FROM visitors WHERE id=NEW.visitor_id AND route_token=NEW.id);
+END`;
+
+async function ensureSchema(db) {
+  try {
+    const hasTeams = await db
+      .prepare(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='teams'",
+      )
+      .first();
+    if (hasTeams) return;
+  } catch {
+    return;
+  }
+
+  await db
+    .prepare(
+      `CREATE TABLE IF NOT EXISTS teams (
+        id TEXT PRIMARY KEY,
+        slug TEXT NOT NULL,
+        name TEXT NOT NULL,
+        batch_size INTEGER NOT NULL DEFAULT 1 CHECK(batch_size BETWEEN 1 AND 1000),
+        cursor_agent TEXT,
+        used INTEGER NOT NULL DEFAULT 0,
+        active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
+        deleted INTEGER NOT NULL DEFAULT 0 CHECK(deleted IN (0,1)),
+        created_at INTEGER NOT NULL DEFAULT 0
+      )`,
+    )
+    .run();
+  await db
+    .prepare(
+      "CREATE UNIQUE INDEX IF NOT EXISTS teams_slug ON teams(lower(slug)) WHERE deleted=0",
+    )
+    .run();
+  try {
+    await db
+      .prepare("ALTER TABLE agents ADD COLUMN team_id TEXT REFERENCES teams(id)")
+      .run();
+  } catch {}
+  await db
+    .prepare(
+      "CREATE INDEX IF NOT EXISTS agents_team ON agents(team_id, active, deleted, position)",
+    )
+    .run();
+  try {
+    await db.prepare("ALTER TABLE route_requests ADD COLUMN team_id TEXT").run();
+  } catch {}
+  await db.batch([
+    db.prepare("DROP TRIGGER IF EXISTS route_available"),
+    db.prepare("DROP TRIGGER IF EXISTS route_assign"),
+    db.prepare(ROUTE_AVAILABLE_TRIGGER_SQL),
+    db.prepare(ROUTE_ASSIGN_TRIGGER_SQL),
+  ]);
+}
+
 async function hash(s) {
   return [
     ...new Uint8Array(
@@ -94,6 +255,7 @@ async function handle({ request, env, params }) {
     });
   }
   if (path === "/api/route" && request.method === "POST") {
+    await ensureSchema(db);
     const data = await body(request);
     if (!validID(cookie(request)))
       fail("Recarregue a página para iniciar o atendimento.", 409);
@@ -106,10 +268,12 @@ async function handle({ request, env, params }) {
       event = uuid(),
       now = Date.now();
 
-    // Rota direta para atendente específico (/atendimento1, /atendente1, número ou ID)
+    // 1. Rota direta para atendente específico (/atendimento1, /atendente1, número ou ID)
     const specificAgent = data.agent ? String(data.agent).trim() : null;
     if (specificAgent) {
-      const ordinalMatch = specificAgent.match(/^(?:atendimento|atendente)?([1-9]\d*)$/i);
+      const ordinalMatch = specificAgent.match(
+        /^(?:atendimento|atendente)?([1-9]\d*)$/i,
+      );
       const pos = ordinalMatch ? parseInt(ordinalMatch[1], 10) : -1;
       const found = await sql(
         `SELECT id, name, phone, active, deleted FROM agents 
@@ -138,19 +302,27 @@ async function handle({ request, env, params }) {
       const batchResults = await db.batch([
         sql(
           "INSERT INTO visitors(id,event_id,agent_id,created_at,route_token) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET agent_id=?, route_token=?",
-          id, event, found.id, now, req, found.id, req,
+          id,
+          event,
+          found.id,
+          now,
+          req,
+          found.id,
+          req,
         ),
+        sql("SELECT event_id FROM visitors WHERE id=?", id),
         sql(
-          "SELECT event_id FROM visitors WHERE id=?",
+          "INSERT INTO deliveries(id,visitor_id,agent_id,created_at,first_delivery) VALUES(?,?,?,?, NOT EXISTS(SELECT 1 FROM deliveries WHERE visitor_id=?))",
+          req,
+          id,
+          found.id,
+          now,
           id,
         ),
         sql(
-          "INSERT INTO deliveries(id,visitor_id,agent_id,created_at,first_delivery) VALUES(?,?,?,?, NOT EXISTS(SELECT 1 FROM deliveries WHERE visitor_id=?))",
-          req, id, found.id, now, id,
-        ),
-        sql(
           "UPDATE visitors SET pixel_claimed=1 WHERE id=? AND pixel_claimed=0 AND ?=1 RETURNING event_id",
-          id, data.analytics === true ? 1 : 0,
+          id,
+          data.analytics === true ? 1 : 0,
         ),
       ]);
       const persistedEventId = batchResults[1].results[0]?.event_id || event;
@@ -167,15 +339,35 @@ async function handle({ request, env, params }) {
       );
     }
 
+    // 2. Rota por equipe (/equipe1, /equipe2, /vendas, etc.) ou Site Principal (team_id = NULL)
+    const specificTeam = data.team ? String(data.team).trim() : null;
+    let targetTeam = null;
+    if (specificTeam) {
+      targetTeam = await sql(
+        `SELECT id, slug, name, active, deleted FROM teams
+         WHERE (id=? OR lower(slug)=lower(?))
+         ORDER BY deleted ASC, (CASE WHEN active=1 THEN 0 ELSE 1 END) LIMIT 1`,
+        specificTeam,
+        specificTeam,
+      ).first();
+      if (!targetTeam || targetTeam.deleted === 1) {
+        fail("Equipe não encontrada.", 404);
+      }
+      if (!targetTeam.active) {
+        fail("Equipe temporariamente indisponível.", 409);
+      }
+    }
+
     let results;
     try {
       results = await db.batch([
         sql(
-          "INSERT INTO route_requests(id,visitor_id,event_id,at) VALUES(?,?,?,?)",
+          "INSERT INTO route_requests(id,visitor_id,event_id,at,team_id) VALUES(?,?,?,?,?)",
           req,
           id,
           event,
           now,
+          targetTeam ? targetTeam.id : null,
         ),
         sql(
           "SELECT v.event_id,a.phone,a.name FROM visitors v JOIN agents a ON a.id=v.agent_id WHERE v.id=?",
@@ -191,7 +383,9 @@ async function handle({ request, env, params }) {
     } catch (e) {
       if (String(e).includes("NO_AGENTS"))
         fail(
-          "Nenhum atendente disponível no momento. Tente novamente mais tarde.",
+          targetTeam
+            ? `Nenhum atendente disponível na equipe ${targetTeam.name} no momento. Tente novamente mais tarde.`
+            : "Nenhum atendente disponível no momento. Tente novamente mais tarde.",
           503,
         );
       throw e;
@@ -201,6 +395,8 @@ async function handle({ request, env, params }) {
     return json(
       {
         phone: row.phone,
+        name: row.name,
+        ...(targetTeam ? { teamName: targetTeam.name, isTeam: true } : {}),
         eventId: row.event_id,
         trackContact: results[3].results.length === 1,
       },
@@ -246,6 +442,7 @@ async function handle({ request, env, params }) {
     return json({ token, expires: now + 1800000 });
   }
   if (path.startsWith("/api/admin/")) {
+    await ensureSchema(db);
     const token = request.headers.get("Authorization")?.replace(/^Bearer /, "");
     if (!token || token.length > 100) fail("Entre novamente no painel.", 401);
     const tokenHash = await hash(token);
@@ -267,6 +464,7 @@ async function handle({ request, env, params }) {
         sql("DELETE FROM visitors"),
         sql("DELETE FROM route_requests"),
         sql("UPDATE settings SET cursor_agent=NULL, used=0 WHERE id=1"),
+        sql("UPDATE teams SET cursor_agent=NULL, used=0"),
       ]);
       return json({ ok: true, message: "Histórico zerado com sucesso." });
     }
@@ -274,10 +472,14 @@ async function handle({ request, env, params }) {
       const res = await db.batch([
         sql("SELECT batch_size FROM settings WHERE id=1"),
         sql("SELECT * FROM agents WHERE deleted=0 ORDER BY position,id"),
+        sql(
+          "SELECT id,slug,name,batch_size,active,created_at FROM teams WHERE deleted=0 ORDER BY created_at,lower(name)",
+        ),
       ]);
       return json({
         batchSize: res[0].results[0].batch_size,
         agents: res[1].results,
+        teams: res[2].results,
       });
     }
     if (path === "/api/admin/config" && request.method === "PUT") {
@@ -294,17 +496,119 @@ async function handle({ request, env, params }) {
       ).run();
       return json({ ok: true });
     }
+    if (path === "/api/admin/teams" && request.method === "POST") {
+      const data = await body(request);
+      const teamName = String(data.name || "").trim();
+      if (!teamName || teamName.length > 80)
+        fail("Informe um nome de equipe de até 80 caracteres.");
+      const slug = normalizeTeamSlug(data.slug || teamName);
+      const batchSize =
+        data.batchSize === undefined ? 1 : Number(data.batchSize);
+      if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 1000)
+        fail("O lote da equipe deve ser de 1 a 1000.");
+      const existing = await sql(
+        "SELECT 1 FROM teams WHERE lower(slug)=lower(?) AND deleted=0",
+        slug,
+      ).first();
+      if (existing) fail("Já existe uma equipe com essa URL.", 409);
+      const teamId = uuid();
+      await sql(
+        "INSERT INTO teams(id,slug,name,batch_size,active,deleted,created_at) VALUES(?,?,?,?,1,0,?)",
+        teamId,
+        slug,
+        teamName,
+        batchSize,
+        Date.now(),
+      ).run();
+      return json({
+        ok: true,
+        team: { id: teamId, slug, name: teamName, batch_size: batchSize, active: 1 },
+      });
+    }
+    if (
+      path.startsWith("/api/admin/teams/") &&
+      ["PUT", "DELETE"].includes(request.method)
+    ) {
+      const id = path.split("/").pop();
+      if (!validID(id)) fail("Equipe inválida.");
+      if (request.method === "DELETE") {
+        await db.batch([
+          sql("UPDATE agents SET team_id=NULL WHERE team_id=?", id),
+          sql("UPDATE teams SET deleted=1,active=0 WHERE id=?", id),
+        ]);
+        return json({ ok: true });
+      }
+      const data = await body(request);
+      const teamName = String(data.name || "").trim();
+      const slug = normalizeTeamSlug(data.slug || teamName);
+      const batchSize = Number(data.batchSize);
+      if (
+        !teamName ||
+        teamName.length > 80 ||
+        typeof data.active !== "boolean" ||
+        !Number.isInteger(batchSize) ||
+        batchSize < 1 ||
+        batchSize > 1000
+      )
+        fail("Dados da equipe inválidos.");
+      const conflict = await sql(
+        "SELECT 1 FROM teams WHERE lower(slug)=lower(?) AND deleted=0 AND id!=?",
+        slug,
+        id,
+      ).first();
+      if (conflict) fail("Já existe outra equipe com essa URL.", 409);
+      await sql(
+        "UPDATE teams SET name=?,slug=?,batch_size=?,active=? WHERE id=? AND deleted=0",
+        teamName,
+        slug,
+        batchSize,
+        data.active ? 1 : 0,
+        id,
+      ).run();
+      return json({ ok: true });
+    }
+    if (path === "/api/admin/agents/move" && request.method === "POST") {
+      const data = await body(request);
+      if (!validID(data.agentId)) fail("Atendente inválido.");
+      let targetTeamId = null;
+      if (data.teamId) {
+        if (!validID(data.teamId)) fail("Equipe de destino inválida.");
+        const foundTeam = await sql(
+          "SELECT 1 FROM teams WHERE id=? AND deleted=0",
+          data.teamId,
+        ).first();
+        if (!foundTeam) fail("Equipe de destino não encontrada.", 404);
+        targetTeamId = data.teamId;
+      }
+      await sql(
+        "UPDATE agents SET team_id=? WHERE id=? AND deleted=0",
+        targetTeamId,
+        data.agentId,
+      ).run();
+      return json({ ok: true });
+    }
     if (path === "/api/admin/agents" && request.method === "POST") {
       const data = await body(request),
         name = String(data.name || "").trim();
       if (!name || name.length > 80)
         fail("Informe um nome de até 80 caracteres.");
       const phone = normalizePhone(data.phone);
+      let teamId = null;
+      if (data.team_id) {
+        if (!validID(data.team_id)) fail("Equipe inválida.");
+        const foundTeam = await sql(
+          "SELECT 1 FROM teams WHERE id=? AND deleted=0",
+          data.team_id,
+        ).first();
+        if (!foundTeam) fail("Equipe não encontrada.", 404);
+        teamId = data.team_id;
+      }
       await sql(
-        "INSERT INTO agents(id,name,phone,position) SELECT ?,?,?,COALESCE(MAX(position),0)+1 FROM agents",
+        "INSERT INTO agents(id,name,phone,position,team_id) SELECT ?,?,?,COALESCE(MAX(position),0)+1,? FROM agents",
         uuid(),
         name,
         phone,
+        teamId,
       ).run();
       return json({ ok: true });
     }
@@ -328,12 +632,23 @@ async function handle({ request, env, params }) {
         data.position < 0
       )
         fail("Dados do atendente inválidos.");
+      let teamId = null;
+      if (data.team_id) {
+        if (!validID(data.team_id)) fail("Equipe inválida.");
+        const foundTeam = await sql(
+          "SELECT 1 FROM teams WHERE id=? AND deleted=0",
+          data.team_id,
+        ).first();
+        if (!foundTeam) fail("Equipe não encontrada.", 404);
+        teamId = data.team_id;
+      }
       await sql(
-        "UPDATE agents SET name=?,phone=?,active=?,position=? WHERE id=? AND deleted=0",
+        "UPDATE agents SET name=?,phone=?,active=?,position=?,team_id=? WHERE id=? AND deleted=0",
         name,
         normalizePhone(data.phone),
         data.active ? 1 : 0,
         data.position,
+        teamId,
         id,
       ).run();
       return json({ ok: true });
@@ -362,7 +677,7 @@ async function handle({ request, env, params }) {
       );
       statements.push(
         sql(
-          `SELECT a.id,a.name,a.phone,a.active,a.deleted,COUNT(d.id) AS deliveries,COALESCE(SUM(d.first_delivery),0) AS new_clients FROM agents a LEFT JOIN deliveries d ON d.agent_id=a.id AND d.created_at>=? AND d.created_at<? GROUP BY a.id ORDER BY a.position,a.id`,
+          `SELECT a.id,a.name,a.phone,a.active,a.deleted,a.team_id,COUNT(d.id) AS deliveries,COALESCE(SUM(d.first_delivery),0) AS new_clients FROM agents a LEFT JOIN deliveries d ON d.agent_id=a.id AND d.created_at>=? AND d.created_at<? GROUP BY a.id ORDER BY a.position,a.id`,
           p[1],
           p[2],
         ),
@@ -386,6 +701,8 @@ export async function onRequest(context) {
   } catch (e) {
     if (String(e).includes("UNIQUE constraint failed: agents.phone"))
       return json({ error: "Esse telefone já está cadastrado." }, 409);
+    if (String(e).includes("UNIQUE constraint failed: teams.slug") || String(e).includes("UNIQUE constraint failed: teams"))
+      return json({ error: "Já existe uma equipe com essa URL." }, 409);
     if (e.status) return json({ error: e.message }, e.status);
     console.error("Falha na API de atendimento");
     return json(

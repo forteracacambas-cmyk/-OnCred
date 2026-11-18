@@ -14,9 +14,10 @@ interface SimulatorHeroProps {
   onOpenPrivacy: () => void;
   onOpenConfig?: () => void;
   fixedAgent?: string;
+  fixedTeam?: string;
 }
 
-export const SimulatorHero: React.FC<SimulatorHeroProps> = ({ fixedAgent }) => {
+export const SimulatorHero: React.FC<SimulatorHeroProps> = ({ fixedAgent, fixedTeam }) => {
   useEffect(() => {
     initVisitor().catch(() => {});
     trackEvent('page_view');
@@ -27,11 +28,14 @@ export const SimulatorHero: React.FC<SimulatorHeroProps> = ({ fixedAgent }) => {
     trackEvent('simulation_started', {
       source: 'hero_cta',
       fixedAgent,
+      fixedTeam,
     });
     const next = new URL('/simulacao', window.location.origin);
     const current = new URL(window.location.href);
     if (fixedAgent && !/^[0-9a-f-]{36}$/i.test(fixedAgent)) {
       next.searchParams.set('atendente', fixedAgent);
+    } else if (fixedTeam && !/^[0-9a-f-]{36}$/i.test(fixedTeam)) {
+      next.searchParams.set('equipe', fixedTeam);
     }
     for (const key of ['ttclid', 'tt_test_id', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_id', 'utm_content', 'utm_term']) {
       const val = current.searchParams.get(key);
@@ -42,6 +46,8 @@ export const SimulatorHero: React.FC<SimulatorHeroProps> = ({ fixedAgent }) => {
 
   const simulationUrl = fixedAgent && !/^[0-9a-f-]{36}$/i.test(fixedAgent)
     ? `/simulacao?atendente=${encodeURIComponent(fixedAgent)}`
+    : fixedTeam && !/^[0-9a-f-]{36}$/i.test(fixedTeam)
+    ? `/simulacao?equipe=${encodeURIComponent(fixedTeam)}`
     : '/simulacao';
 
   return (

@@ -110,13 +110,16 @@ export function initVisitor() {
   return initialization;
 }
 let routing = false;
-export async function goToWhatsApp(message: string, fixedAgent?: string) {
+export async function goToWhatsApp(message: string, fixedAgent?: string, fixedTeam?: string) {
   if (routing) return;
   routing = true;
   try {
     sessionStorage.setItem("oncred_handoff", JSON.stringify({ message, at: Date.now() }));
-    if (fixedAgent && !/^[0-9a-f-]{36}$/i.test(fixedAgent.trim())) {
-      sessionStorage.setItem("oncred_fixed_agent", fixedAgent.trim());
+    const cleanAgent = fixedAgent && !/^[0-9a-f-]{36}$/i.test(fixedAgent.trim()) ? fixedAgent.trim() : undefined;
+    const cleanTeam = !cleanAgent && fixedTeam && !/^[0-9a-f-]{36}$/i.test(fixedTeam.trim()) ? fixedTeam.trim() : undefined;
+
+    if (cleanAgent) {
+      sessionStorage.setItem("oncred_fixed_agent", cleanAgent);
     } else {
       if (typeof sessionStorage?.removeItem === "function") {
         sessionStorage.removeItem("oncred_fixed_agent");
@@ -124,20 +127,39 @@ export async function goToWhatsApp(message: string, fixedAgent?: string) {
         sessionStorage.setItem("oncred_fixed_agent", "");
       }
     }
+
+    if (cleanTeam) {
+      sessionStorage.setItem("oncred_fixed_team", cleanTeam);
+    } else {
+      if (typeof sessionStorage?.removeItem === "function") {
+        sessionStorage.removeItem("oncred_fixed_team");
+      } else {
+        sessionStorage.setItem("oncred_fixed_team", "");
+      }
+    }
+
     const next = new URL("/contato", location.origin);
     next.searchParams.set("atendimento", crypto.randomUUID());
-    if (fixedAgent && !/^[0-9a-f-]{36}$/i.test(fixedAgent.trim())) {
-      next.searchParams.set("atendente", fixedAgent.trim());
+    if (cleanAgent) {
+      next.searchParams.set("atendente", cleanAgent);
+    } else if (cleanTeam) {
+      next.searchParams.set("equipe", cleanTeam);
     }
+
     const current = new URL(location.href);
     for (const key of ["ttclid", "tt_test_id", "utm_source", "utm_medium", "utm_campaign", "utm_id", "utm_content", "utm_term"]) {
       const value = current.searchParams.get(key);
       if (value) next.searchParams.set(key, value);
     }
-    // Preserva atendente caso tenha vindo via query param (nunca atendimento como agente)
+    // Preserva atendente ou equipe caso tenha vindo via query param (nunca atendimento como agente)
     const agentParam = current.searchParams.get("atendente") || current.searchParams.get("agente");
     if (agentParam && !next.searchParams.has("atendente") && !/^[0-9a-f-]{36}$/i.test(agentParam.trim())) {
       next.searchParams.set("atendente", agentParam.trim());
+    } else if (!next.searchParams.has("atendente") && !next.searchParams.has("equipe")) {
+      const teamParam = current.searchParams.get("equipe") || current.searchParams.get("team");
+      if (teamParam && !/^[0-9a-f-]{36}$/i.test(teamParam.trim())) {
+        next.searchParams.set("equipe", teamParam.trim());
+      }
     }
     location.assign(next.pathname + next.search);
   } finally {
@@ -183,7 +205,9 @@ export interface AssignmentResult {
   trackContact: boolean;
   eventId: string;
   agentName?: string;
+  teamName?: string;
   isDirect?: boolean;
+  isTeam?: boolean;
 }
 
 let assignment: Promise<AssignmentResult> | undefined;
@@ -215,10 +239,29 @@ export function getFixedAgent(): string | undefined {
   }
 }
 
+export function getFixedTeam(): string | undefined {
+  try {
+    if (getFixedAgent()) return undefined;
+    const url = new URL(location.href);
+    const candidate =
+      url.searchParams.get("equipe") ||
+      url.searchParams.get("team") ||
+      sessionStorage.getItem("oncred_fixed_team") ||
+      "";
+    const trimmed = candidate.trim();
+    if (!trimmed) return undefined;
+    if (/^[0-9a-f-]{36}$/i.test(trimmed)) return undefined;
+    return trimmed;
+  } catch {
+    return undefined;
+  }
+}
+
 export function assignAttendant() {
   if (!assignment) assignment = (async (): Promise<AssignmentResult> => {
     const handoff = handoffId();
     const fixedAgent = getFixedAgent();
+    const fixedTeam = !fixedAgent ? getFixedTeam() : undefined;
     let data: any;
     try {
       await initVisitor();
@@ -226,16 +269,20 @@ export function assignAttendant() {
         analytics: analyticsAllowed(),
         handoffId: handoff,
         agent: fixedAgent,
+        team: fixedTeam,
       });
     } catch (e: any) {
       // 4) Fallback oncred_local_agents somente em import.meta.env.DEV e sem Lead.
       if (Boolean(import.meta.env?.DEV)) {
         try {
           const localAgentsRaw = localStorage.getItem("oncred_local_agents");
+          const localTeamsRaw = localStorage.getItem("oncred_local_teams");
           if (localAgentsRaw) {
             const localAgents = JSON.parse(localAgentsRaw);
+            const localTeams = localTeamsRaw ? JSON.parse(localTeamsRaw) : [];
             if (Array.isArray(localAgents) && localAgents.length > 0) {
               let selected = localAgents[0];
+              let teamObj: any = null;
               if (fixedAgent) {
                 const ordinalMatch = fixedAgent.match(/^(?:atendimento|atendente)?([1-9]\d*)$/i);
                 const pos = ordinalMatch ? parseInt(ordinalMatch[1], 10) : -1;
@@ -247,13 +294,26 @@ export function assignAttendant() {
                   `atendente${a.position}` === fixedAgent.toLowerCase()
                 );
                 if (found) selected = found;
+              } else if (fixedTeam && Array.isArray(localTeams)) {
+                teamObj = localTeams.find((t: any) =>
+                  t.id === fixedTeam || String(t.slug).toLowerCase() === fixedTeam.toLowerCase()
+                );
+                const pool = teamObj
+                  ? localAgents.filter((a: any) => a.active !== 0 && a.team_id === teamObj.id)
+                  : [];
+                if (pool.length > 0) selected = pool[0];
+              } else {
+                const generalPool = localAgents.filter((a: any) => a.active !== 0 && !a.team_id);
+                if (generalPool.length > 0) selected = generalPool[0];
               }
               data = {
                 phone: selected.phone,
                 name: selected.name,
+                teamName: teamObj?.name,
                 eventId: crypto.randomUUID(),
                 trackContact: false, // Sem Lead no fallback local
                 isDirect: !!fixedAgent,
+                isTeam: !!teamObj,
               };
             }
           }
@@ -273,7 +333,9 @@ export function assignAttendant() {
       trackContact: data.trackContact === true,
       eventId: data.eventId,
       agentName: data.name || data.agentName,
+      teamName: data.teamName,
       isDirect: data.isDirect === true,
+      isTeam: data.isTeam === true,
     };
   })().catch((error) => { assignment = undefined; throw error; });
   return assignment;
