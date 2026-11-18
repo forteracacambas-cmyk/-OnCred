@@ -507,4 +507,92 @@ test("banco legado (apenas 0001) é atualizado automaticamente para suportar equ
   assert.equal(r.data.phone, a1.phone);
 });
 
+test("POST /api/admin/save publica alterações em lote e GET /api/team reflete status online", async (t) => {
+  const s = await setup(t);
+
+  // Antes de criar equipe2, /api/team retorna 404
+  const notFound = await s.call("team?slug=equipe2");
+  assert.equal(notFound.status, 404);
+  assert.equal(notFound.data.online, false);
+
+  // Salva tudo de uma vez (equipe2 temporária + atendente temporário + ajuste de lote)
+  const saveRes = await s.admin("save", "POST", {
+    batchSize: 3,
+    teams: [
+      { id: "temp-team-2", name: "Equipe 2", slug: "equipe2", batch_size: 2, active: true },
+      { id: "temp-team-3", name: "Equipe Vazia", slug: "equipe3", batch_size: 1, active: true },
+    ],
+    agents: [
+      { id: "temp-agent-1", name: "Atendente E2", phone: "11988887777", active: true, team_id: "temp-team-2" },
+      { id: "temp-agent-2", name: "Atendente Geral", phone: "11988886666", active: true, team_id: null },
+    ],
+  });
+  assert.equal(saveRes.status, 200);
+  assert.equal(saveRes.data.ok, true);
+  assert.equal(saveRes.data.batchSize, 3);
+  assert.equal(saveRes.data.teams.length, 2);
+  assert.equal(saveRes.data.agents.length, 2);
+
+  // /api/team?slug=equipe2 deve estar online com 1 atendente
+  const e2Status = await s.call("team?slug=equipe2");
+  assert.equal(e2Status.status, 200);
+  assert.equal(e2Status.data.online, true);
+  assert.equal(e2Status.data.agentCount, 1);
+
+  // /api/team?slug=equipe3 existe mas está sem atendentes (online: false)
+  const e3Status = await s.call("team?slug=equipe3");
+  assert.equal(e3Status.status, 200);
+  assert.equal(e3Status.data.exists, true);
+  assert.equal(e3Status.data.online, false);
+  assert.equal(e3Status.data.agentCount, 0);
+
+  // Roteamento para equipe2 funciona imediatamente
+  const v = await s.visitor();
+  const routeRes = await s.call("route", {
+    method: "POST",
+    cookie: v,
+    body: { analytics: true, handoffId: crypto.randomUUID(), team: "equipe2" },
+  });
+  assert.equal(routeRes.status, 200);
+  assert.equal(routeRes.data.phone, "5511988887777");
+  assert.equal(routeRes.data.teamName, "Equipe 2");
+
+  // Troca de telefones entre dois atendentes no mesmo Save + pausa da equipe2
+  const savedE2 = saveRes.data.teams.find((x) => x.slug === "equipe2");
+  const savedA1 = saveRes.data.agents.find((x) => x.name === "Atendente E2");
+  const savedA2 = saveRes.data.agents.find((x) => x.name === "Atendente Geral");
+  const swapSave = await s.admin("save", "POST", {
+    batchSize: 1,
+    teams: [{ ...savedE2, active: false }],
+    agents: [
+      { ...savedA1, phone: savedA2.phone, active: true },
+      { ...savedA2, phone: savedA1.phone, active: true },
+    ],
+  });
+  assert.equal(swapSave.status, 200);
+  const pausedStatus = await s.call("team?slug=equipe2");
+  assert.equal(pausedStatus.data.active, false);
+  assert.equal(pausedStatus.data.online, false);
+});
+
+test("ensureSchema repara banco em estado parcial (tabela teams existe mas faltam colunas/triggers)", async (t) => {
+  const partialSql =
+    legacySchema +
+    "\nCREATE TABLE IF NOT EXISTS teams (id TEXT PRIMARY KEY, slug TEXT NOT NULL, name TEXT NOT NULL, batch_size INTEGER NOT NULL DEFAULT 1, cursor_agent TEXT, used INTEGER NOT NULL DEFAULT 0, active INTEGER NOT NULL DEFAULT 1, deleted INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL DEFAULT 0);";
+  const s = await setup(t, partialSql);
+  const res = await s.admin("save", "POST", {
+    batchSize: 1,
+    teams: [{ id: "temp-t1", name: "Equipe Reparo", slug: "reparo", batch_size: 1, active: true }],
+    agents: [{ id: "temp-a1", name: "Reparo 1", phone: "11977776666", active: true, team_id: "temp-t1" }],
+  });
+  assert.equal(res.status, 200);
+  const c = await s.visitor();
+  const r = await s.call("route", {
+    method: "POST",
+    cookie: c,
+    body: { analytics: true, handoffId: crypto.randomUUID(), team: "reparo" },
+  });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.phone, "5511977776666");
+});
 

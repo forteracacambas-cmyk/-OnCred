@@ -86,9 +86,15 @@ export default function App() {
   return <Landing fixedAgent={fixedAgent} fixedTeam={fixedTeam} />;
 }
 
+type TeamAvailability =
+  | { status: 'idle' }
+  | { status: 'online'; name: string }
+  | { status: 'unavailable'; reason: 'not_found' | 'paused' | 'empty'; teamName?: string };
+
 function Landing({ fixedAgent, fixedTeam }: { fixedAgent?: string; fixedTeam?: string }) {
   const [isPrivacyOpen, setIsPrivacyOpen] = useState(false);
   const [isTermsOpen, setIsTermsOpen] = useState(false);
+  const [teamCheck, setTeamCheck] = useState<TeamAvailability>({ status: 'idle' });
 
   // Garante que visitas à URL principal (/) não herdem equipe/atendente antigos da sessão
   useEffect(() => {
@@ -105,6 +111,39 @@ function Landing({ fixedAgent, fixedTeam }: { fixedAgent?: string; fixedTeam?: s
       }
     } catch {}
   }, [fixedAgent, fixedTeam]);
+
+  // Verifica se a URL de equipe (/equipe2, etc.) existe, está ativa e possui atendentes salvos online
+  useEffect(() => {
+    if (!fixedTeam) {
+      setTeamCheck({ status: 'idle' });
+      return;
+    }
+    let alive = true;
+    (async () => {
+      try {
+        const res = await fetch(`/api/team?slug=${encodeURIComponent(fixedTeam)}`, {
+          cache: 'no-store',
+        });
+        if (!res.headers.get('Content-Type')?.includes('application/json')) return;
+        const data = await res.json();
+        if (!alive) return;
+        if (res.status === 404 || data.exists === false) {
+          setTeamCheck({ status: 'unavailable', reason: 'not_found' });
+        } else if (data.active === false) {
+          setTeamCheck({ status: 'unavailable', reason: 'paused', teamName: data.name });
+        } else if (Number(data.agentCount || 0) <= 0) {
+          setTeamCheck({ status: 'unavailable', reason: 'empty', teamName: data.name });
+        } else {
+          setTeamCheck({ status: 'online', name: data.name });
+        }
+      } catch {
+        // Falha transitória de rede não bloqueia renderização
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [fixedTeam]);
 
   // Detectar rota no pathname ou hash para abrir páginas legais automaticamente
   useEffect(() => {
@@ -135,6 +174,39 @@ function Landing({ fixedAgent, fixedTeam }: { fixedAgent?: string; fixedTeam?: s
       el.scrollIntoView({ behavior: 'smooth' });
     }
   };
+
+  if (teamCheck.status === 'unavailable') {
+    const title =
+      teamCheck.reason === 'paused'
+        ? 'Equipe temporariamente pausada'
+        : teamCheck.reason === 'empty'
+        ? 'Equipe sem atendentes ativos'
+        : 'Link de equipe não encontrado';
+    const description =
+      teamCheck.reason === 'paused'
+        ? `O canal "${teamCheck.teamName || fixedTeam}" está pausado no momento pelo administrador.`
+        : teamCheck.reason === 'empty'
+        ? `A equipe "${teamCheck.teamName || fixedTeam}" já foi criada, mas ainda não possui atendentes ativos vinculados ou salvos no painel.`
+        : `A URL "/${fixedTeam}" não foi localizada ou ainda não foi salva no painel administrativo.`;
+
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center px-5 py-10">
+        <div className="w-full max-w-md rounded-3xl border border-slate-800 bg-slate-900 p-7 text-center shadow-2xl">
+          <div className="font-extrabold tracking-tight text-white text-lg mb-4">
+            ZM <span className="text-emerald-400">SCD</span>
+          </div>
+          <h1 className="text-xl sm:text-2xl font-bold text-white mb-3">{title}</h1>
+          <p className="text-sm text-slate-300 leading-relaxed mb-6">{description}</p>
+          <a
+            href="/"
+            className="block w-full rounded-xl bg-emerald-400 hover:bg-emerald-300 px-5 py-3.5 font-extrabold text-slate-950 transition-colors"
+          >
+            Acessar Site Principal
+          </a>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div id="topo" className="min-h-screen flex flex-col bg-slate-950 text-slate-100 font-sans selection:bg-emerald-500 selection:text-slate-950">

@@ -119,56 +119,101 @@ BEGIN
 END`;
 
 async function ensureSchema(db) {
+  let hasTeams = false;
+  let hasAgentTeamCol = false;
+  let hasReqTeamCol = false;
+  let triggersReady = false;
+
   try {
-    const hasTeams = await db
+    hasTeams = !!(await db
       .prepare(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='teams'",
       )
-      .first();
-    if (hasTeams) return;
+      .first());
+
+    if (hasTeams) {
+      const agentCols = await db.prepare("PRAGMA table_info(agents)").all();
+      hasAgentTeamCol = (agentCols.results || []).some(
+        (c) => c.name === "team_id",
+      );
+
+      const reqCols = await db
+        .prepare("PRAGMA table_info(route_requests)")
+        .all();
+      hasReqTeamCol = (reqCols.results || []).some((c) => c.name === "team_id");
+
+      const tr = await db
+        .prepare(
+          "SELECT name, sql FROM sqlite_master WHERE type='trigger' AND name IN ('route_available','route_assign')",
+        )
+        .all();
+      const rows = tr.results || [];
+      triggersReady =
+        rows.length === 2 &&
+        rows.every((r) => String(r.sql || "").includes("team_id"));
+    }
   } catch {
     return;
   }
 
-  await db
-    .prepare(
-      `CREATE TABLE IF NOT EXISTS teams (
-        id TEXT PRIMARY KEY,
-        slug TEXT NOT NULL,
-        name TEXT NOT NULL,
-        batch_size INTEGER NOT NULL DEFAULT 1 CHECK(batch_size BETWEEN 1 AND 1000),
-        cursor_agent TEXT,
-        used INTEGER NOT NULL DEFAULT 0,
-        active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
-        deleted INTEGER NOT NULL DEFAULT 0 CHECK(deleted IN (0,1)),
-        created_at INTEGER NOT NULL DEFAULT 0
-      )`,
-    )
-    .run();
+  if (hasTeams && hasAgentTeamCol && hasReqTeamCol && triggersReady) return;
+
+  if (!hasTeams) {
+    await db
+      .prepare(
+        `CREATE TABLE IF NOT EXISTS teams (
+          id TEXT PRIMARY KEY,
+          slug TEXT NOT NULL,
+          name TEXT NOT NULL,
+          batch_size INTEGER NOT NULL DEFAULT 1 CHECK(batch_size BETWEEN 1 AND 1000),
+          cursor_agent TEXT,
+          used INTEGER NOT NULL DEFAULT 0,
+          active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
+          deleted INTEGER NOT NULL DEFAULT 0 CHECK(deleted IN (0,1)),
+          created_at INTEGER NOT NULL DEFAULT 0
+        )`,
+      )
+      .run();
+  }
+
   await db
     .prepare(
       "CREATE UNIQUE INDEX IF NOT EXISTS teams_slug ON teams(lower(slug)) WHERE deleted=0",
     )
     .run();
-  try {
-    await db
-      .prepare("ALTER TABLE agents ADD COLUMN team_id TEXT REFERENCES teams(id)")
-      .run();
-  } catch {}
+
+  if (!hasAgentTeamCol) {
+    try {
+      await db
+        .prepare(
+          "ALTER TABLE agents ADD COLUMN team_id TEXT REFERENCES teams(id)",
+        )
+        .run();
+    } catch {}
+  }
+
   await db
     .prepare(
       "CREATE INDEX IF NOT EXISTS agents_team ON agents(team_id, active, deleted, position)",
     )
     .run();
-  try {
-    await db.prepare("ALTER TABLE route_requests ADD COLUMN team_id TEXT").run();
-  } catch {}
-  await db.batch([
-    db.prepare("DROP TRIGGER IF EXISTS route_available"),
-    db.prepare("DROP TRIGGER IF EXISTS route_assign"),
-    db.prepare(ROUTE_AVAILABLE_TRIGGER_SQL),
-    db.prepare(ROUTE_ASSIGN_TRIGGER_SQL),
-  ]);
+
+  if (!hasReqTeamCol) {
+    try {
+      await db
+        .prepare("ALTER TABLE route_requests ADD COLUMN team_id TEXT")
+        .run();
+    } catch {}
+  }
+
+  if (!triggersReady) {
+    await db.batch([
+      db.prepare("DROP TRIGGER IF EXISTS route_available"),
+      db.prepare("DROP TRIGGER IF EXISTS route_assign"),
+      db.prepare(ROUTE_AVAILABLE_TRIGGER_SQL),
+      db.prepare(ROUTE_ASSIGN_TRIGGER_SQL),
+    ]);
+  }
 }
 
 async function hash(s) {
@@ -252,6 +297,38 @@ async function handle({ request, env, params }) {
     return json({ ready: true }, 200, {
       "Set-Cookie": visitorCookie(request, id),
       Vary: "Cookie",
+    });
+  }
+  if (path === "/api/team" && request.method === "GET") {
+    await ensureSchema(db);
+    const slug = String(url.searchParams.get("slug") || "").trim();
+    if (!slug) fail("Equipe não informada.", 400);
+    const team = await sql(
+      `SELECT id, slug, name, active, deleted FROM teams
+       WHERE (id=? OR lower(slug)=lower(?))
+       ORDER BY deleted ASC, (CASE WHEN active=1 THEN 0 ELSE 1 END) LIMIT 1`,
+      slug,
+      slug,
+    ).first();
+    if (!team || team.deleted === 1) {
+      return json(
+        { exists: false, online: false, error: "Equipe não encontrada." },
+        404,
+      );
+    }
+    const countRow = await sql(
+      "SELECT COUNT(*) AS count FROM agents WHERE active=1 AND deleted=0 AND team_id=?",
+      team.id,
+    ).first();
+    const agentCount = Number(countRow?.count || 0);
+    const active = team.active === 1;
+    return json({
+      exists: true,
+      active,
+      online: active && agentCount > 0,
+      slug: team.slug,
+      name: team.name,
+      agentCount,
     });
   }
   if (path === "/api/route" && request.method === "POST") {
@@ -495,6 +572,210 @@ async function handle({ request, env, params }) {
         data.batchSize,
       ).run();
       return json({ ok: true });
+    }
+    if (path === "/api/admin/save" && request.method === "POST") {
+      const data = await body(request);
+      const batchSize = Number(data.batchSize);
+      if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 1000)
+        fail("O lote do Site Principal deve ser de 1 a 1000.");
+      if (!Array.isArray(data.teams) || !Array.isArray(data.agents))
+        fail("Dados de salvamento inválidos.");
+
+      const existingRes = await db.batch([
+        sql("SELECT id FROM teams WHERE deleted=0"),
+        sql("SELECT id, position FROM agents WHERE deleted=0"),
+        sql("SELECT COALESCE(MAX(position),0) AS max_pos FROM agents"),
+      ]);
+      const existingTeamIds = new Set(
+        (existingRes[0].results || []).map((r) => r.id),
+      );
+      const existingAgentPos = new Map(
+        (existingRes[1].results || []).map((r) => [r.id, r.position]),
+      );
+      let nextPos = Number(existingRes[2].results?.[0]?.max_pos || 0);
+
+      const teamIdMap = new Map();
+      const seenSlugs = new Set();
+      const normalizedTeams = [];
+
+      for (const rawTeam of data.teams) {
+        if (!rawTeam || rawTeam.deleted) continue;
+        const tName = String(rawTeam.name || "").trim();
+        if (!tName || tName.length > 80)
+          fail("Todas as equipes precisam ter um nome de até 80 caracteres.");
+        const slug = normalizeTeamSlug(rawTeam.slug || tName);
+        if (seenSlugs.has(slug.toLowerCase()))
+          fail(`URL duplicada entre equipes: /${slug}`, 409);
+        seenSlugs.add(slug.toLowerCase());
+        const tBatch =
+          rawTeam.batch_size === undefined ? 1 : Number(rawTeam.batch_size);
+        if (!Number.isInteger(tBatch) || tBatch < 1 || tBatch > 1000)
+          fail(`O lote da equipe "${tName}" deve ser de 1 a 1000.`);
+        const rawId = String(rawTeam.id || "");
+        const isExisting = validID(rawId) && existingTeamIds.has(rawId);
+        const resolvedId = isExisting ? rawId : uuid();
+        if (rawId) teamIdMap.set(rawId, resolvedId);
+        teamIdMap.set(resolvedId, resolvedId);
+
+        normalizedTeams.push({
+          id: resolvedId,
+          isExisting,
+          slug,
+          name: tName,
+          batch_size: tBatch,
+          active: rawTeam.active === false || rawTeam.active === 0 ? 0 : 1,
+        });
+      }
+
+      const validTeamIds = new Set(normalizedTeams.map((t) => t.id));
+      const seenPhones = new Set();
+      const normalizedAgents = [];
+
+      for (const rawAgent of data.agents) {
+        if (!rawAgent || rawAgent.deleted) continue;
+        const aName = String(rawAgent.name || "").trim();
+        if (!aName || aName.length > 80)
+          fail("Todos os atendentes precisam ter um nome de até 80 caracteres.");
+        const phone = normalizePhone(rawAgent.phone);
+        if (seenPhones.has(phone))
+          fail(`Telefone duplicado nos atendentes: ${phone}`, 409);
+        seenPhones.add(phone);
+
+        let resolvedTeamId = null;
+        if (rawAgent.team_id) {
+          const mapped = teamIdMap.get(String(rawAgent.team_id)) || String(rawAgent.team_id);
+          if (!validTeamIds.has(mapped))
+            fail(`Equipe de destino inválida para ${aName}.`);
+          resolvedTeamId = mapped;
+        }
+
+        const rawId = String(rawAgent.id || "");
+        const isExisting = validID(rawId) && existingAgentPos.has(rawId);
+        const resolvedId = isExisting ? rawId : uuid();
+        const position = isExisting ? existingAgentPos.get(rawId) : ++nextPos;
+
+        normalizedAgents.push({
+          id: resolvedId,
+          isExisting,
+          name: aName,
+          phone,
+          position,
+          active: rawAgent.active === false || rawAgent.active === 0 ? 0 : 1,
+          team_id: resolvedTeamId,
+        });
+      }
+
+      const keptTeamIds = new Set(normalizedTeams.filter((t) => t.isExisting).map((t) => t.id));
+      const keptAgentIds = new Set(normalizedAgents.filter((a) => a.isExisting).map((a) => a.id));
+
+      const stmts = [
+        sql("UPDATE settings SET batch_size=? WHERE id=1", batchSize),
+      ];
+
+      // 1. Soft-delete agents removed from the board first so freed phones are immediately reusable
+      for (const oldId of existingAgentPos.keys()) {
+        if (!keptAgentIds.has(oldId)) {
+          stmts.push(
+            sql("UPDATE agents SET deleted=1,active=0,team_id=NULL WHERE id=?", oldId),
+          );
+        }
+      }
+
+      // 2. Soft-delete teams removed from the board
+      for (const oldTeamId of existingTeamIds) {
+        if (!keptTeamIds.has(oldTeamId)) {
+          stmts.push(
+            sql("UPDATE agents SET team_id=NULL WHERE team_id=?", oldTeamId),
+          );
+          stmts.push(
+            sql("UPDATE teams SET deleted=1,active=0 WHERE id=?", oldTeamId),
+          );
+        }
+      }
+
+      // 3. Upsert teams
+      const now = Date.now();
+      for (const t of normalizedTeams) {
+        if (t.isExisting) {
+          stmts.push(
+            sql(
+              "UPDATE teams SET name=?,slug=?,batch_size=?,active=? WHERE id=? AND deleted=0",
+              t.name,
+              t.slug,
+              t.batch_size,
+              t.active,
+              t.id,
+            ),
+          );
+        } else {
+          stmts.push(
+            sql(
+              "INSERT INTO teams(id,slug,name,batch_size,active,deleted,created_at) VALUES(?,?,?,?,?,0,?)",
+              t.id,
+              t.slug,
+              t.name,
+              t.batch_size,
+              t.active,
+              now,
+            ),
+          );
+        }
+      }
+
+      // 4. Temporarily clear phones of kept existing agents to allow phone swaps within the same save
+      for (const a of normalizedAgents) {
+        if (a.isExisting) {
+          stmts.push(
+            sql("UPDATE agents SET phone=? WHERE id=? AND deleted=0", "__swap__" + a.id, a.id),
+          );
+        }
+      }
+
+      // 5. Upsert all agents with final values
+      for (const a of normalizedAgents) {
+        if (a.isExisting) {
+          stmts.push(
+            sql(
+              "UPDATE agents SET name=?,phone=?,active=?,position=?,team_id=? WHERE id=? AND deleted=0",
+              a.name,
+              a.phone,
+              a.active,
+              a.position,
+              a.team_id,
+              a.id,
+            ),
+          );
+        } else {
+          stmts.push(
+            sql(
+              "INSERT INTO agents(id,name,phone,position,active,deleted,team_id) VALUES(?,?,?,?,?,0,?)",
+              a.id,
+              a.name,
+              a.phone,
+              a.position,
+              a.active,
+              a.team_id,
+            ),
+          );
+        }
+      }
+
+      await db.batch(stmts);
+
+      const savedSnapshot = await db.batch([
+        sql("SELECT batch_size FROM settings WHERE id=1"),
+        sql("SELECT * FROM agents WHERE deleted=0 ORDER BY position,id"),
+        sql(
+          "SELECT id,slug,name,batch_size,active,created_at FROM teams WHERE deleted=0 ORDER BY created_at,lower(name)",
+        ),
+      ]);
+
+      return json({
+        ok: true,
+        batchSize: savedSnapshot[0].results[0].batch_size,
+        agents: savedSnapshot[1].results,
+        teams: savedSnapshot[2].results,
+      });
     }
     if (path === "/api/admin/teams" && request.method === "POST") {
       const data = await body(request);

@@ -1,3 +1,4 @@
+import fs from 'fs';
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
@@ -5,17 +6,77 @@ import {fileURLToPath} from 'url';
 import {defineConfig} from 'vite';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const DEV_STATE_FILE = path.resolve(__dirname, '.dev-panel-state.json');
+
+const RESERVED_TEAM_SLUGS = new Set([
+  'painel',
+  'contato',
+  'simulacao',
+  'simular',
+  'api',
+  'atendente',
+  'atendimento',
+  'politica-de-privacidade',
+  'termos-de-uso',
+  'assets',
+  'doc',
+  'favicon',
+  'robots',
+  'sitemap',
+]);
+
+function normalizeDevSlug(input: any) {
+  const s = String(input || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  if (!s || !/^[a-z0-9][a-z0-9_-]{0,48}$/.test(s) || RESERVED_TEAM_SLUGS.has(s) || /^atend(?:imento|ente)\d+$/i.test(s)) {
+    return null;
+  }
+  return s;
+}
+
+function normalizeDevPhone(input: any) {
+  let n = String(input || '').replace(/\D/g, '').replace(/^0+/, '');
+  if (n.length === 10 || n.length === 11) n = '55' + n;
+  if (!/^55[1-9][0-9]\d{8,9}$/.test(n)) return null;
+  return n;
+}
 
 function devApiPlugin() {
-  const devTeams: any[] = [
-    { id: "11111111-1111-1111-1111-111111111111", slug: "equipe1", name: "Equipe 1", batch_size: 1, active: 1, deleted: 0, cursor: 0 },
-  ];
-  const devAgents: any[] = [
-    { id: "22222222-2222-2222-2222-222222222201", name: "Atendente Comercial 1", phone: "551130420181", position: 1, active: 1, deleted: 0, team_id: null },
-    { id: "22222222-2222-2222-2222-222222222202", name: "Atendente Comercial 2", phone: "551130420181", position: 2, active: 1, deleted: 0, team_id: "11111111-1111-1111-1111-111111111111" },
-  ];
-  let batchSize = 1;
-  let generalCursor = 0;
+  const defaultState = () => ({
+    devTeams: [
+      { id: "11111111-1111-1111-1111-111111111111", slug: "equipe1", name: "Equipe 1", batch_size: 1, active: 1, deleted: 0, cursor: 0 },
+    ],
+    devAgents: [
+      { id: "22222222-2222-2222-2222-222222222201", name: "Atendente Comercial 1", phone: "551130420181", position: 1, active: 1, deleted: 0, team_id: null },
+      { id: "22222222-2222-2222-2222-222222222202", name: "Atendente Comercial 2", phone: "551130420181", position: 2, active: 1, deleted: 0, team_id: "11111111-1111-1111-1111-111111111111" },
+    ],
+    batchSize: 1,
+    generalCursor: 0,
+  });
+
+  const loadState = () => {
+    try {
+      if (fs.existsSync(DEV_STATE_FILE)) {
+        const parsed = JSON.parse(fs.readFileSync(DEV_STATE_FILE, 'utf8'));
+        if (parsed && Array.isArray(parsed.devTeams) && Array.isArray(parsed.devAgents)) {
+          return parsed;
+        }
+      }
+    } catch {}
+    return defaultState();
+  };
+
+  let state = loadState();
+  const persistState = () => {
+    try {
+      fs.writeFileSync(DEV_STATE_FILE, JSON.stringify(state, null, 2), 'utf8');
+    } catch {}
+  };
 
   const readJson = (req: any): Promise<any> =>
     new Promise((resolve) => {
@@ -42,6 +103,27 @@ function devApiPlugin() {
           return;
         }
 
+        if (pathname === '/api/team' && req.method === 'GET') {
+          const slug = String(url.searchParams.get('slug') || '').trim();
+          const team = state.devTeams.find((t: any) => !t.deleted && (t.id === slug || t.slug.toLowerCase() === slug.toLowerCase()));
+          if (!team) {
+            res.statusCode = 404;
+            res.end(JSON.stringify({ exists: false, online: false, error: 'Equipe não encontrada.' }));
+            return;
+          }
+          const agentCount = state.devAgents.filter((a: any) => !a.deleted && a.active && a.team_id === team.id).length;
+          const active = !!team.active;
+          res.end(JSON.stringify({
+            exists: true,
+            active,
+            online: active && agentCount > 0,
+            slug: team.slug,
+            name: team.name,
+            agentCount,
+          }));
+          return;
+        }
+
         if (pathname === '/api/route' && req.method === 'POST') {
           const data = await readJson(req);
           let selected: any;
@@ -52,7 +134,7 @@ function devApiPlugin() {
           if (specificAgent) {
             const ordinalMatch = specificAgent.match(/^(?:atendimento|atendente)?([1-9]\d*)$/i);
             const pos = ordinalMatch ? parseInt(ordinalMatch[1], 10) : -1;
-            const found = devAgents.find(a =>
+            const found = state.devAgents.find((a: any) =>
               !a.deleted && (
                 a.id === specificAgent ||
                 a.position === pos ||
@@ -72,7 +154,7 @@ function devApiPlugin() {
             }
             selected = found;
           } else if (specificTeam) {
-            teamObj = devTeams.find(t => !t.deleted && (t.id === specificTeam || t.slug.toLowerCase() === specificTeam.toLowerCase()));
+            teamObj = state.devTeams.find((t: any) => !t.deleted && (t.id === specificTeam || t.slug.toLowerCase() === specificTeam.toLowerCase()));
             if (!teamObj) {
               res.statusCode = 404;
               res.end(JSON.stringify({ error: "Equipe não encontrada." }));
@@ -83,23 +165,25 @@ function devApiPlugin() {
               res.end(JSON.stringify({ error: "Equipe temporariamente indisponível." }));
               return;
             }
-            const pool = devAgents.filter(a => !a.deleted && a.active && a.team_id === teamObj.id);
+            const pool = state.devAgents.filter((a: any) => !a.deleted && a.active && a.team_id === teamObj.id);
             if (!pool.length) {
               res.statusCode = 503;
               res.end(JSON.stringify({ error: `Nenhum atendente disponível na equipe ${teamObj.name} no momento.` }));
               return;
             }
-            selected = pool[teamObj.cursor % pool.length];
-            teamObj.cursor++;
+            selected = pool[(teamObj.cursor || 0) % pool.length];
+            teamObj.cursor = (teamObj.cursor || 0) + 1;
+            persistState();
           } else {
-            const pool = devAgents.filter(a => !a.deleted && a.active && !a.team_id);
+            const pool = state.devAgents.filter((a: any) => !a.deleted && a.active && !a.team_id);
             if (!pool.length) {
               res.statusCode = 503;
               res.end(JSON.stringify({ error: "Nenhum atendente disponível no momento." }));
               return;
             }
-            selected = pool[generalCursor % pool.length];
-            generalCursor++;
+            selected = pool[(state.generalCursor || 0) % pool.length];
+            state.generalCursor = (state.generalCursor || 0) + 1;
+            persistState();
           }
 
           res.end(JSON.stringify({
@@ -124,8 +208,9 @@ function devApiPlugin() {
         }
 
         if (pathname === '/api/admin/clear-history' && req.method === 'POST') {
-          generalCursor = 0;
-          devTeams.forEach(t => { t.cursor = 0; });
+          state.generalCursor = 0;
+          state.devTeams.forEach((t: any) => { t.cursor = 0; });
+          persistState();
           res.end(JSON.stringify({ ok: true }));
           return;
         }
@@ -133,22 +218,110 @@ function devApiPlugin() {
         if (pathname === '/api/admin/config') {
           if (req.method === 'PUT') {
             const data = await readJson(req);
-            if (Number.isInteger(data.batchSize) && data.batchSize >= 1) batchSize = data.batchSize;
+            if (Number.isInteger(data.batchSize) && data.batchSize >= 1) state.batchSize = data.batchSize;
+            persistState();
             res.end(JSON.stringify({ ok: true }));
             return;
           }
           res.end(JSON.stringify({
-            batchSize,
-            agents: devAgents.filter(a => !a.deleted),
-            teams: devTeams.filter(t => !t.deleted),
+            batchSize: state.batchSize,
+            agents: state.devAgents.filter((a: any) => !a.deleted),
+            teams: state.devTeams.filter((t: any) => !t.deleted),
+          }));
+          return;
+        }
+
+        if (pathname === '/api/admin/save' && req.method === 'POST') {
+          const data = await readJson(req);
+          const nextBatch = Number(data.batchSize);
+          if (!Number.isInteger(nextBatch) || nextBatch < 1 || nextBatch > 1000) {
+            res.statusCode = 400;
+            res.end(JSON.stringify({ error: "O lote do Site Principal deve ser de 1 a 1000." }));
+            return;
+          }
+          const teamIdMap = new Map<string, string>();
+          const seenSlugs = new Set<string>();
+          const newTeams: any[] = [];
+          for (const rawT of (data.teams || [])) {
+            if (!rawT || rawT.deleted) continue;
+            const slug = normalizeDevSlug(rawT.slug || rawT.name);
+            if (!slug) {
+              res.statusCode = 400;
+              res.end(JSON.stringify({ error: "URL da equipe inválida ou reservada." }));
+              return;
+            }
+            if (seenSlugs.has(slug)) {
+              res.statusCode = 409;
+              res.end(JSON.stringify({ error: `URL duplicada entre equipes: /${slug}` }));
+              return;
+            }
+            seenSlugs.add(slug);
+            const existing = state.devTeams.find((x: any) => x.id === rawT.id && !x.deleted);
+            const id = existing ? existing.id : crypto.randomUUID();
+            if (rawT.id) teamIdMap.set(String(rawT.id), id);
+            newTeams.push({
+              id,
+              slug,
+              name: String(rawT.name || slug).trim(),
+              batch_size: Number(rawT.batch_size) || 1,
+              active: rawT.active === false || rawT.active === 0 ? 0 : 1,
+              deleted: 0,
+              cursor: existing?.cursor || 0,
+            });
+          }
+
+          let maxPos = state.devAgents.reduce((m: number, a: any) => Math.max(m, a.position || 0), 0);
+          const seenPhones = new Set<string>();
+          const newAgents: any[] = [];
+          for (const rawA of (data.agents || [])) {
+            if (!rawA || rawA.deleted) continue;
+            const phone = normalizeDevPhone(rawA.phone);
+            if (!phone) {
+              res.statusCode = 400;
+              res.end(JSON.stringify({ error: `Telefone inválido para ${rawA.name || 'atendente'}. Informe DDD + número.` }));
+              return;
+            }
+            if (seenPhones.has(phone)) {
+              res.statusCode = 409;
+              res.end(JSON.stringify({ error: `Telefone duplicado: ${phone}` }));
+              return;
+            }
+            seenPhones.add(phone);
+            const existing = state.devAgents.find((x: any) => x.id === rawA.id && !x.deleted);
+            const resolvedTeam = rawA.team_id ? (teamIdMap.get(String(rawA.team_id)) || rawA.team_id) : null;
+            newAgents.push({
+              id: existing ? existing.id : crypto.randomUUID(),
+              name: String(rawA.name || '').trim(),
+              phone,
+              position: existing ? existing.position : ++maxPos,
+              active: rawA.active === false || rawA.active === 0 ? 0 : 1,
+              deleted: 0,
+              team_id: resolvedTeam,
+            });
+          }
+
+          state.batchSize = nextBatch;
+          state.devTeams = newTeams;
+          state.devAgents = newAgents;
+          persistState();
+          res.end(JSON.stringify({
+            ok: true,
+            batchSize: state.batchSize,
+            agents: state.devAgents,
+            teams: state.devTeams,
           }));
           return;
         }
 
         if (pathname === '/api/admin/teams' && req.method === 'POST') {
           const data = await readJson(req);
-          const slug = String(data.slug || data.name || '').toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
-          if (devTeams.some(t => !t.deleted && t.slug.toLowerCase() === slug)) {
+          const slug = normalizeDevSlug(data.slug || data.name);
+          if (!slug) {
+            res.statusCode = 400;
+            res.end(JSON.stringify({ error: "URL da equipe inválida ou reservada." }));
+            return;
+          }
+          if (state.devTeams.some((t: any) => !t.deleted && t.slug.toLowerCase() === slug)) {
             res.statusCode = 409;
             res.end(JSON.stringify({ error: "Já existe uma equipe com essa URL." }));
             return;
@@ -162,14 +335,15 @@ function devApiPlugin() {
             deleted: 0,
             cursor: 0,
           };
-          devTeams.push(team);
+          state.devTeams.push(team);
+          persistState();
           res.end(JSON.stringify({ ok: true, team }));
           return;
         }
 
         if (pathname.startsWith('/api/admin/teams/')) {
           const id = pathname.split('/').pop();
-          const team = devTeams.find(t => t.id === id && !t.deleted);
+          const team = state.devTeams.find((t: any) => t.id === id && !t.deleted);
           if (!team) {
             res.statusCode = 404;
             res.end(JSON.stringify({ error: "Equipe não encontrada." }));
@@ -178,16 +352,18 @@ function devApiPlugin() {
           if (req.method === 'DELETE') {
             team.deleted = 1;
             team.active = 0;
-            devAgents.forEach(a => { if (a.team_id === id) a.team_id = null; });
+            state.devAgents.forEach((a: any) => { if (a.team_id === id) a.team_id = null; });
+            persistState();
             res.end(JSON.stringify({ ok: true }));
             return;
           }
           if (req.method === 'PUT') {
             const data = await readJson(req);
             team.name = String(data.name || team.name).trim();
-            team.slug = String(data.slug || team.slug).toLowerCase().trim();
+            team.slug = normalizeDevSlug(data.slug || team.slug) || team.slug;
             team.batch_size = Number(data.batchSize) || 1;
             team.active = data.active ? 1 : 0;
+            persistState();
             res.end(JSON.stringify({ ok: true }));
             return;
           }
@@ -195,33 +371,39 @@ function devApiPlugin() {
 
         if (pathname === '/api/admin/agents/move' && req.method === 'POST') {
           const data = await readJson(req);
-          const agent = devAgents.find(a => a.id === data.agentId && !a.deleted);
+          const agent = state.devAgents.find((a: any) => a.id === data.agentId && !a.deleted);
           if (agent) agent.team_id = data.teamId || null;
+          persistState();
           res.end(JSON.stringify({ ok: true }));
           return;
         }
 
         if (pathname === '/api/admin/agents' && req.method === 'POST') {
           const data = await readJson(req);
-          const maxPos = devAgents.reduce((m, a) => Math.max(m, a.position || 0), 0);
-          let digits = String(data.phone || '').replace(/\D/g, '').replace(/^0+/, '');
-          if (digits.length === 10 || digits.length === 11) digits = '55' + digits;
-          devAgents.push({
+          const maxPos = state.devAgents.reduce((m: number, a: any) => Math.max(m, a.position || 0), 0);
+          const phone = normalizeDevPhone(data.phone);
+          if (!phone) {
+            res.statusCode = 400;
+            res.end(JSON.stringify({ error: "Informe um telefone brasileiro válido com DDD." }));
+            return;
+          }
+          state.devAgents.push({
             id: crypto.randomUUID(),
             name: String(data.name || '').trim(),
-            phone: digits,
+            phone,
             position: maxPos + 1,
             active: 1,
             deleted: 0,
             team_id: data.team_id || null,
           });
+          persistState();
           res.end(JSON.stringify({ ok: true }));
           return;
         }
 
         if (pathname.startsWith('/api/admin/agents/')) {
           const id = pathname.split('/').pop();
-          const agent = devAgents.find(a => a.id === id && !a.deleted);
+          const agent = state.devAgents.find((a: any) => a.id === id && !a.deleted);
           if (!agent) {
             res.statusCode = 404;
             res.end(JSON.stringify({ error: "Atendente não encontrado." }));
@@ -230,18 +412,24 @@ function devApiPlugin() {
           if (req.method === 'DELETE') {
             agent.deleted = 1;
             agent.active = 0;
+            persistState();
             res.end(JSON.stringify({ ok: true }));
             return;
           }
           if (req.method === 'PUT') {
             const data = await readJson(req);
-            let digits = String(data.phone || agent.phone).replace(/\D/g, '').replace(/^0+/, '');
-            if (digits.length === 10 || digits.length === 11) digits = '55' + digits;
+            const phone = normalizeDevPhone(data.phone || agent.phone);
+            if (!phone) {
+              res.statusCode = 400;
+              res.end(JSON.stringify({ error: "Informe um telefone brasileiro válido com DDD." }));
+              return;
+            }
             agent.name = String(data.name || agent.name).trim();
-            agent.phone = digits;
+            agent.phone = phone;
             agent.active = data.active ? 1 : 0;
             agent.position = Number.isInteger(data.position) ? data.position : agent.position;
             agent.team_id = data.team_id || null;
+            persistState();
             res.end(JSON.stringify({ ok: true }));
             return;
           }
@@ -250,7 +438,7 @@ function devApiPlugin() {
         if (pathname === '/api/admin/stats') {
           res.end(JSON.stringify({
             totals: { today: 12, yesterday: 8, '7': 45, '15': 89, '30': 150, total: 320 },
-            agents: devAgents.map(a => ({ id: a.id, name: a.name, phone: a.phone, active: a.active, deleted: a.deleted, team_id: a.team_id, deliveries: 15, new_clients: 12 })),
+            agents: state.devAgents.map((a: any) => ({ id: a.id, name: a.name, phone: a.phone, active: a.active, deleted: a.deleted, team_id: a.team_id, deliveries: 15, new_clients: 12 })),
             period: 'today',
           }));
           return;

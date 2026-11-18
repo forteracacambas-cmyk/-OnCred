@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { api } from "../utils/atendimento";
 import "./panel.css";
 
@@ -21,6 +21,12 @@ type Team = {
   created_at?: number;
 };
 
+type Snapshot = {
+  batchSize: number;
+  teams: Team[];
+  agents: Agent[];
+};
+
 const periods = [
   ["today", "Hoje"],
   ["yesterday", "Ontem"],
@@ -29,6 +35,23 @@ const periods = [
   ["30", "30 dias"],
   ["total", "Total"],
 ];
+
+const RESERVED_TEAM_SLUGS = new Set([
+  "painel",
+  "contato",
+  "simulacao",
+  "simular",
+  "api",
+  "atendente",
+  "atendimento",
+  "politica-de-privacidade",
+  "termos-de-uso",
+  "assets",
+  "doc",
+  "favicon",
+  "robots",
+  "sitemap",
+]);
 
 function formatDisplayPhone(p: string) {
   const digits = String(p || "").replace(/\D/g, "");
@@ -47,7 +70,6 @@ function suggestTeamSlug(name: string) {
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
     .trim();
-  // "Equipe 1" -> "equipe1"
   if (/^equipe\s+\d+$/i.test(clean)) {
     return clean.replace(/\s+/g, "");
   }
@@ -57,12 +79,71 @@ function suggestTeamSlug(name: string) {
     .slice(0, 48);
 }
 
+function normalizeTeamSlugClient(input: string): string {
+  const s = String(input || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  if (
+    !s ||
+    !/^[a-z0-9][a-z0-9_-]{0,48}$/.test(s) ||
+    RESERVED_TEAM_SLUGS.has(s) ||
+    /^atend(?:imento|ente)\d+$/i.test(s)
+  ) {
+    throw new Error(
+      "URL da equipe inválida ou reservada. Use letras minúsculas, números, '-' ou '_' (ex: equipe2, vendas).",
+    );
+  }
+  return s;
+}
+
+function normalizePhoneClient(input: string): string {
+  let n = String(input || "").replace(/\D/g, "").replace(/^0+/, "");
+  if (n.length === 10 || n.length === 11) {
+    n = "55" + n;
+  }
+  if (!/^55[1-9][0-9]\d{8,9}$/.test(n)) {
+    throw new Error("Informe um telefone brasileiro válido com DDD.");
+  }
+  return n;
+}
+
+function serializeSnapshot(batchSize: number, teams: Team[], agents: Agent[]) {
+  return JSON.stringify({
+    batchSize: Number(batchSize) || 1,
+    teams: teams.map((t) => ({
+      id: t.id,
+      slug: t.slug,
+      name: t.name,
+      batch_size: Number(t.batch_size) || 1,
+      active: t.active ? 1 : 0,
+    })),
+    agents: agents.map((a) => ({
+      id: a.id,
+      name: a.name,
+      phone: a.phone,
+      position: a.position,
+      active: a.active ? 1 : 0,
+      team_id: a.team_id || null,
+    })),
+  });
+}
+
 export default function AttendantPanel() {
   const [token, setToken] = useState(""),
     [password, setPassword] = useState(""),
     [error, setError] = useState(""),
     [notice, setNotice] = useState(""),
     [busy, setBusy] = useState(false);
+
+  const [savedSnapshot, setSavedSnapshot] = useState<Snapshot>({
+    batchSize: 1,
+    teams: [],
+    agents: [],
+  });
 
   const [agents, setAgents] = useState<Agent[]>([]),
     [teams, setTeams] = useState<Team[]>([]),
@@ -86,9 +167,22 @@ export default function AttendantPanel() {
 
   // Drag-and-drop state
   const [draggingAgentId, setDraggingAgentId] = useState<string | null>(null),
-    [dragOverTarget, setDragOverTarget] = useState<string | null>(null); // "general" or team.id
+    [dragOverTarget, setDragOverTarget] = useState<string | null>(null);
 
   const origin = typeof window !== "undefined" ? window.location.origin : "https://zmscd.online";
+
+  const isDirty = useMemo(() => {
+    return (
+      serializeSnapshot(batch, teams, agents) !==
+      serializeSnapshot(savedSnapshot.batchSize, savedSnapshot.teams, savedSnapshot.agents)
+    );
+  }, [batch, teams, agents, savedSnapshot]);
+
+  const savedTeamMap = useMemo(() => {
+    const map = new Map<string, Team>();
+    for (const t of savedSnapshot.teams) map.set(t.id, t);
+    return map;
+  }, [savedSnapshot.teams]);
 
   const copyLink = (url: string, id: string) => {
     try {
@@ -114,21 +208,31 @@ export default function AttendantPanel() {
     }
   };
 
+  const applyServerSnapshot = (config: { batchSize: number; agents: Agent[]; teams: Team[] }) => {
+    const loadedAgents = config.agents || [];
+    const loadedTeams = config.teams || [];
+    const loadedBatch = Number(config.batchSize) || 1;
+    setSavedSnapshot({
+      batchSize: loadedBatch,
+      teams: loadedTeams,
+      agents: loadedAgents,
+    });
+    setAgents(loadedAgents);
+    setTeams(loadedTeams);
+    setBatch(loadedBatch);
+    try {
+      localStorage.setItem("oncred_local_agents", JSON.stringify(loadedAgents));
+      localStorage.setItem("oncred_local_teams", JSON.stringify(loadedTeams));
+    } catch {}
+  };
+
   const refresh = async () => {
     const [config, totals] = await Promise.all([
       request("config"),
       request("stats?period=" + period),
     ]);
-    const loadedAgents = config.agents || [];
-    const loadedTeams = config.teams || [];
-    setAgents(loadedAgents);
-    setTeams(loadedTeams);
-    setBatch(config.batchSize);
+    applyServerSnapshot(config);
     setStats(totals);
-    try {
-      localStorage.setItem("oncred_local_agents", JSON.stringify(loadedAgents));
-      localStorage.setItem("oncred_local_teams", JSON.stringify(loadedTeams));
-    } catch {}
   };
 
   useEffect(() => {
@@ -137,6 +241,16 @@ export default function AttendantPanel() {
       .querySelector('meta[name="robots"]')
       ?.setAttribute("content", "noindex,nofollow");
   }, []);
+
+  useEffect(() => {
+    if (!isDirty) return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [isDirty]);
 
   useEffect(() => {
     if (!token) return;
@@ -197,67 +311,229 @@ export default function AttendantPanel() {
     setTeamBatch(1);
   };
 
-  const saveAgent = () =>
-    run(async () => {
-      const targetTeam = agentTeamId || null;
-      if (editing)
-        await request("agents/" + editing.id, "PUT", {
-          ...editing,
-          name,
-          phone,
-          active: !!editing.active,
-          team_id: targetTeam,
-        });
-      else await request("agents", "POST", { name, phone, team_id: targetTeam });
-      reset();
-      await refresh();
-      setNotice("Atendente salvo. A distribuição já usa os novos dados.");
-    });
+  // --- Ações em Rascunho (exigem clicar em "Salvar alterações" para ir online) ---
 
-  const saveTeam = () =>
-    run(async () => {
-      const slugToUse = (teamSlug || suggestTeamSlug(teamName)).trim();
-      if (editingTeam) {
-        await request("teams/" + editingTeam.id, "PUT", {
-          name: teamName,
-          slug: slugToUse,
-          batchSize: teamBatch,
-          active: !!editingTeam.active,
-        });
-        setNotice(`Equipe "${teamName}" atualizada! URL: ${origin}/${slugToUse}`);
+  const stageSaveAgent = () => {
+    setError("");
+    setNotice("");
+    try {
+      const cleanName = String(name || "").trim();
+      if (!cleanName || cleanName.length > 80) {
+        throw new Error("Informe um nome de até 80 caracteres.");
+      }
+      const normalizedPhone = normalizePhoneClient(phone);
+      const duplicate = agents.find(
+        (a) => a.phone === normalizedPhone && (!editing || a.id !== editing.id),
+      );
+      if (duplicate) {
+        throw new Error(`Esse telefone já está cadastrado no atendente "${duplicate.name}".`);
+      }
+
+      const targetTeam = agentTeamId || null;
+      if (editing) {
+        setAgents((prev) =>
+          prev.map((a) =>
+            a.id === editing.id
+              ? { ...a, name: cleanName, phone: normalizedPhone, team_id: targetTeam }
+              : a,
+          ),
+        );
+        setNotice(`Atendente "${cleanName}" atualizado no rascunho. Clique em "Salvar alterações" para publicar online.`);
       } else {
-        await request("teams", "POST", {
-          name: teamName,
-          slug: slugToUse,
-          batchSize: teamBatch,
-        });
-        setNotice(`Equipe "${teamName}" criada! Anuncie usando ${origin}/${slugToUse}`);
+        const nextPos = agents.reduce((m, a) => Math.max(m, a.position || 0), 0) + 1;
+        const tempId = "temp-agent-" + crypto.randomUUID();
+        setAgents((prev) => [
+          ...prev,
+          {
+            id: tempId,
+            name: cleanName,
+            phone: normalizedPhone,
+            position: nextPos,
+            active: 1,
+            deleted: 0,
+            team_id: targetTeam,
+          },
+        ]);
+        setNotice(`Atendente "${cleanName}" adicionado! Clique em "Salvar alterações" para publicar online.`);
+      }
+      reset();
+    } catch (e: any) {
+      setError(e.message);
+    }
+  };
+
+  const stageSaveTeam = () => {
+    setError("");
+    setNotice("");
+    try {
+      const cleanName = String(teamName || "").trim();
+      if (!cleanName || cleanName.length > 80) {
+        throw new Error("Informe um nome de equipe de até 80 caracteres.");
+      }
+      const slugToUse = normalizeTeamSlugClient(teamSlug || suggestTeamSlug(cleanName));
+      const cleanBatch = Math.max(1, Math.min(1000, Math.round(Number(teamBatch) || 1)));
+      const duplicate = teams.find(
+        (t) =>
+          t.slug.toLowerCase() === slugToUse.toLowerCase() &&
+          (!editingTeam || t.id !== editingTeam.id),
+      );
+      if (duplicate) {
+        throw new Error(`Já existe uma equipe usando a URL /${slugToUse}.`);
+      }
+
+      if (editingTeam) {
+        setTeams((prev) =>
+          prev.map((t) =>
+            t.id === editingTeam.id
+              ? { ...t, name: cleanName, slug: slugToUse, batch_size: cleanBatch }
+              : t,
+          ),
+        );
+        setNotice(`Equipe "${cleanName}" atualizada no rascunho. Clique em "Salvar alterações" para publicar online.`);
+      } else {
+        const tempTeamId = "temp-team-" + crypto.randomUUID();
+        setTeams((prev) => [
+          ...prev,
+          {
+            id: tempTeamId,
+            name: cleanName,
+            slug: slugToUse,
+            batch_size: cleanBatch,
+            active: 1,
+            created_at: Date.now(),
+          },
+        ]);
+        setNotice(
+          `Equipe "${cleanName}" criada (/${slugToUse})! Arraste pelo menos 1 número para ela e clique em "Salvar alterações" para ficar online.`,
+        );
       }
       resetTeamForm();
-      await refresh();
-    });
+    } catch (e: any) {
+      setError(e.message);
+    }
+  };
 
   const moveAgentToTeam = (agentId: string, targetTeamId: string | null) => {
     const agent = agents.find((a) => a.id === agentId);
     if (!agent || (agent.team_id || null) === targetTeamId) return;
-
-    // Atualização otimista imediata na tela ao arrastar
+    setError("");
     setAgents((prev) =>
       prev.map((a) => (a.id === agentId ? { ...a, team_id: targetTeamId } : a)),
     );
-
-    run(async () => {
-      await request("agents/move", "POST", {
-        agentId,
-        teamId: targetTeamId,
-      });
-      await refresh();
-      const targetName = targetTeamId
-        ? teams.find((t) => t.id === targetTeamId)?.name || "equipe"
-        : "Site Principal (Geral)";
-      setNotice(`${agent.name} movido para ${targetName}.`);
-    });
+    const targetName = targetTeamId
+      ? teams.find((t) => t.id === targetTeamId)?.name || "equipe"
+      : "Site Principal (Geral)";
+    setNotice(`${agent.name} movido para ${targetName}. Clique em "Salvar alterações" para publicar online.`);
   };
+
+  const toggleAgentActive = (agent: Agent) => {
+    setError("");
+    setAgents((prev) =>
+      prev.map((a) => (a.id === agent.id ? { ...a, active: a.active ? 0 : 1 } : a)),
+    );
+    setNotice(
+      `Status de ${agent.name} alterado no rascunho. Clique em "Salvar alterações" para publicar online.`,
+    );
+  };
+
+  const deleteAgentStage = (agent: Agent) => {
+    if (
+      !confirm(
+        `Remover ${agent.name} da distribuição? O histórico anterior será preservado após salvar.`,
+      )
+    )
+      return;
+    setError("");
+    setAgents((prev) => prev.filter((a) => a.id !== agent.id));
+    if (editing?.id === agent.id) reset();
+    setNotice(`${agent.name} marcado para remoção. Clique em "Salvar alterações" para confirmar online.`);
+  };
+
+  const toggleTeamActive = (t: Team) => {
+    setError("");
+    setTeams((prev) =>
+      prev.map((item) => (item.id === t.id ? { ...item, active: item.active ? 0 : 1 } : item)),
+    );
+    setNotice(
+      `Equipe "${t.name}" alterada no rascunho. Clique em "Salvar alterações" para publicar online.`,
+    );
+  };
+
+  const deleteTeamStage = (t: Team) => {
+    if (
+      !confirm(
+        `Excluir a equipe "${t.name}"? Os atendentes dela voltarão para o Site Principal.`,
+      )
+    )
+      return;
+    setError("");
+    setTeams((prev) => prev.filter((item) => item.id !== t.id));
+    setAgents((prev) =>
+      prev.map((a) => (a.team_id === t.id ? { ...a, team_id: null } : a)),
+    );
+    if (editingTeam?.id === t.id) resetTeamForm();
+    setNotice(`Equipe "${t.name}" removida no rascunho. Clique em "Salvar alterações" para aplicar online.`);
+  };
+
+  const updateTeamBatchStage = (teamId: string, nextVal: number) => {
+    const cleanVal = Math.max(1, Math.min(1000, Math.round(Number(nextVal) || 1)));
+    setTeams((prev) =>
+      prev.map((t) => (t.id === teamId ? { ...t, batch_size: cleanVal } : t)),
+    );
+  };
+
+  const discardChanges = () => {
+    setError("");
+    setBatch(savedSnapshot.batchSize);
+    setTeams(savedSnapshot.teams);
+    setAgents(savedSnapshot.agents);
+    reset();
+    resetTeamForm();
+    setNotice("Alterações não salvas foram descartadas.");
+  };
+
+  const publishAllChanges = () =>
+    run(async () => {
+      const cleanBatch = Math.max(1, Math.min(1000, Math.round(Number(batch) || 1)));
+      const saved = await request("save", "POST", {
+        batchSize: cleanBatch,
+        teams: teams.map((t) => ({
+          id: t.id,
+          name: t.name,
+          slug: t.slug,
+          batch_size: Math.max(1, Math.min(1000, Math.round(Number(t.batch_size) || 1))),
+          active: !!t.active,
+        })),
+        agents: agents.map((a) => ({
+          id: a.id,
+          name: a.name,
+          phone: a.phone,
+          position: a.position,
+          active: !!a.active,
+          team_id: a.team_id || null,
+        })),
+      });
+      const [totals] = await Promise.all([request("stats?period=" + period)]);
+      applyServerSnapshot({
+        batchSize: saved.batchSize,
+        agents: saved.agents,
+        teams: saved.teams,
+      });
+      setStats(totals);
+
+      const emptyTeams = (saved.teams || []).filter(
+        (t: Team) =>
+          t.active &&
+          !(saved.agents || []).some((a: Agent) => a.active && a.team_id === t.id),
+      );
+      if (emptyTeams.length > 0) {
+        setNotice(
+          `Alterações salvas e publicadas online! Atenção: a equipe "${emptyTeams.map((t: Team) => t.name).join('", "')}" ainda está sem atendentes ativos — arraste pelo menos 1 número para ela e salve novamente.`,
+        );
+      } else {
+        setNotice("Todas as alterações foram salvas e já estão ONLINE!");
+      }
+    });
 
   const clearHistory = () => {
     if (
@@ -302,13 +578,50 @@ export default function AttendantPanel() {
     }
   };
 
+  const renderSaveBar = (bottom = false) => (
+    <div
+      className={`panel-save-bar ${isDirty ? "is-dirty" : ""} ${bottom ? "panel-save-bar-bottom" : ""}`}
+      role="region"
+      aria-label="Publicação de alterações"
+    >
+      <div className="panel-save-status">
+        <span className="panel-save-dot" aria-hidden="true" />
+        <span>
+          {isDirty
+            ? "Você tem alterações pendentes — clique em \"Salvar alterações\" para ficar online."
+            : "Tudo salvo e online no momento."}
+        </span>
+      </div>
+      <div className="panel-save-actions">
+        {isDirty && (
+          <button type="button" disabled={busy} onClick={discardChanges}>
+            Descartar
+          </button>
+        )}
+        <button
+          type="button"
+          className={`save-online-btn ${isDirty ? "needs-save" : ""}`}
+          disabled={busy}
+          onClick={publishAllChanges}
+        >
+          {busy
+            ? "Salvando e publicando…"
+            : isDirty
+            ? "Salvar alterações (Publicar online)"
+            : "Salvar alterações"}
+        </button>
+      </div>
+    </div>
+  );
+
   const renderAgentCard = (a: Agent) => {
     const counts = stats?.agents?.find((v: any) => v.id === a.id);
     const isDragging = draggingAgentId === a.id;
+    const isNewUnsaved = a.id.startsWith("temp-");
     return (
       <div
         key={a.id}
-        draggable={!busy}
+        draggable
         onDragStart={(e) => handleDragStart(e, a.id)}
         onDragEnd={handleDragEnd}
         className={`team-agent-card ${isDragging ? "dragging" : ""}`}
@@ -318,7 +631,14 @@ export default function AttendantPanel() {
           <div className="team-agent-info">
             <span className="drag-grip" aria-hidden="true">⋮⋮</span>
             <div>
-              <div className="team-agent-name">{a.name}</div>
+              <div className="team-agent-name">
+                {a.name}
+                {isNewUnsaved && (
+                  <span style={{ marginLeft: 6, fontSize: 10, color: "#fbbf24" }}>
+                    (Novo — salve)
+                  </span>
+                )}
+              </div>
               <div className="team-agent-phone">{formatDisplayPhone(a.phone)}</div>
             </div>
           </div>
@@ -338,7 +658,6 @@ export default function AttendantPanel() {
           <select
             aria-label={`Mover ${a.name} para equipe`}
             value={a.team_id || ""}
-            disabled={busy}
             onChange={(e) => moveAgentToTeam(a.id, e.target.value || null)}
           >
             <option value="">Site Principal (/)</option>
@@ -350,7 +669,6 @@ export default function AttendantPanel() {
           </select>
           <button
             type="button"
-            disabled={busy}
             onClick={() => {
               setEditing(a);
               setName(a.name);
@@ -362,17 +680,7 @@ export default function AttendantPanel() {
           </button>
           <button
             type="button"
-            disabled={busy}
-            onClick={() =>
-              run(async () => {
-                await request("agents/" + a.id, "PUT", {
-                  ...a,
-                  active: !a.active,
-                  team_id: a.team_id || null,
-                });
-                await refresh();
-              })
-            }
+            onClick={() => toggleAgentActive(a)}
           >
             {a.active ? "Pausar" : "Ativar"}
           </button>
@@ -382,6 +690,7 @@ export default function AttendantPanel() {
   };
 
   const generalAgents = agents.filter((a) => !a.team_id);
+  const generalActiveCount = generalAgents.filter((a) => a.active).length;
 
   return (
     <main className="attendant-panel">
@@ -392,7 +701,7 @@ export default function AttendantPanel() {
               ZM <span>SCD</span>
             </div>
             <h1>Painel de atendentes e equipes</h1>
-            <p>Organize números por setor, arraste entre equipes e distribua encaminhamentos para o WhatsApp</p>
+            <p>Organize números por setor, arraste entre equipes e clique em Salvar alterações para publicar online</p>
           </div>
           {token && (
             <div className="panel-header-actions">
@@ -422,6 +731,7 @@ export default function AttendantPanel() {
             </div>
           )}
         </header>
+
         {error && (
           <div role="alert" className="panel-alert">
             {error}
@@ -432,6 +742,7 @@ export default function AttendantPanel() {
             {notice}
           </div>
         )}
+
         {!token ? (
           <form
             className="panel-card panel-login"
@@ -466,6 +777,8 @@ export default function AttendantPanel() {
           </form>
         ) : (
           <>
+            {renderSaveBar(false)}
+
             <div className="panel-section-header">
               <div>
                 <h2>Métricas e registros</h2>
@@ -512,7 +825,7 @@ export default function AttendantPanel() {
                     Estrutura de URLs para Campanhas e Setores
                   </h2>
                   <p>
-                    Separe seus setores com rodízio independente e medição unificada em /contato:
+                    Organize as equipes abaixo, arraste os números desejados e clique em <strong>Salvar alterações</strong> para publicar online:
                   </p>
                 </div>
               </div>
@@ -538,7 +851,7 @@ export default function AttendantPanel() {
                 <div className="campaign-guide-item">
                   <h3>2. URLs de Equipes (/equipe1, /equipe2…)</h3>
                   <p>
-                    Cada equipe criada tem sua própria URL de campanha. O cliente gira <strong>somente</strong> entre os atendentes arrastados para aquela equipe.
+                    Cada equipe criada tem sua própria URL de campanha. O cliente gira <strong>somente</strong> entre os atendentes ativos daquela equipe.
                   </p>
                   <div className="campaign-guide-code">
                     {teams.length > 0
@@ -571,7 +884,7 @@ export default function AttendantPanel() {
                 <div>
                   <h2>Organizador de Equipes e Setores (Arrastar e Soltar)</h2>
                   <p>
-                    Crie equipes com URLs próprias e arraste os cartões de atendentes entre o <strong>Site Principal</strong> e as <strong>Equipes</strong>.
+                    Crie equipes com URLs próprias, arraste os números para as colunas e clique em <strong>Salvar alterações</strong> para publicar online.
                   </p>
                 </div>
               </div>
@@ -588,13 +901,13 @@ export default function AttendantPanel() {
                 }}
                 onSubmit={(e) => {
                   e.preventDefault();
-                  saveTeam();
+                  stageSaveTeam();
                 }}
               >
                 <label>
                   {editingTeam ? "Editar nome da equipe" : "Nova equipe / setor"}
                   <input
-                    placeholder="Ex: Equipe 1, Consignado, Setor PJ"
+                    placeholder="Ex: Equipe 2, Consignado, Setor PJ"
                     value={teamName}
                     onChange={(e) => {
                       const val = e.target.value;
@@ -608,9 +921,9 @@ export default function AttendantPanel() {
                   />
                 </label>
                 <label>
-                  URL da equipe ({origin}/{teamSlug || "equipe1"})
+                  URL da equipe ({origin}/{teamSlug || "equipe2"})
                   <input
-                    placeholder="equipe1"
+                    placeholder="equipe2"
                     value={teamSlug}
                     onChange={(e) => {
                       setTeamSlugTouched(true);
@@ -634,8 +947,8 @@ export default function AttendantPanel() {
                     onChange={(e) => setTeamBatch(Number(e.target.value))}
                   />
                 </label>
-                <button className="primary" disabled={busy}>
-                  {editingTeam ? "Salvar equipe" : "Criar equipe"}
+                <button className="primary">
+                  {editingTeam ? "Atualizar equipe" : "Criar equipe"}
                 </button>
                 {editingTeam && (
                   <button type="button" onClick={resetTeamForm}>
@@ -661,8 +974,10 @@ export default function AttendantPanel() {
                         Site Principal (Geral)
                         <span className="team-count-badge">{generalAgents.length}</span>
                       </h3>
-                      <span className="active" style={{ fontSize: "11px", fontWeight: 700 }}>
-                        Ativa
+                      <span className={`team-status-pill ${generalActiveCount > 0 ? "online" : "empty"}`}>
+                        {generalActiveCount > 0
+                          ? `Online (${generalActiveCount} ativo${generalActiveCount > 1 ? "s" : ""})`
+                          : "Sem atendentes"}
                       </span>
                     </div>
 
@@ -688,16 +1003,7 @@ export default function AttendantPanel() {
                       </div>
                     </div>
 
-                    <form
-                      className="team-toolbar"
-                      onSubmit={(e) => {
-                        e.preventDefault();
-                        run(async () => {
-                          await request("config", "PUT", { batchSize: batch });
-                          setNotice("Lote do Site Principal salvo.");
-                        });
-                      }}
-                    >
+                    <div className="team-toolbar">
                       <span>Lote: {batch} clique(s) por atendente</span>
                       <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
                         <input
@@ -707,13 +1013,10 @@ export default function AttendantPanel() {
                           max={1000}
                           value={batch}
                           onChange={(e) => setBatch(Number(e.target.value))}
-                          style={{ width: "68px", padding: "4px 6px", fontSize: "11px" }}
+                          style={{ width: "74px", padding: "4px 6px", fontSize: "11px" }}
                         />
-                        <button type="submit" disabled={busy} style={{ padding: "4px 8px", fontSize: "11px" }}>
-                          Salvar lote
-                        </button>
                       </div>
-                    </form>
+                    </div>
                   </div>
 
                   <div className="team-agents-list">
@@ -730,8 +1033,38 @@ export default function AttendantPanel() {
                 {/* Colunas Dinâmicas: Equipes Criadas */}
                 {teams.map((t) => {
                   const teamAgents = agents.filter((a) => a.team_id === t.id);
+                  const teamActiveCount = teamAgents.filter((a) => a.active).length;
+                  const savedT = savedTeamMap.get(t.id);
+                  const isTeamSavedOnServer = !!savedT && savedT.slug === t.slug;
+                  const isTeamUnsaved =
+                    !savedT ||
+                    savedT.slug !== t.slug ||
+                    savedT.name !== t.name ||
+                    savedT.batch_size !== t.batch_size ||
+                    savedT.active !== t.active ||
+                    teamAgents.some((a) => {
+                      const prevA = savedSnapshot.agents.find((sa) => sa.id === a.id);
+                      return !prevA || prevA.team_id !== t.id || prevA.active !== a.active;
+                    });
                   const teamUrl = `${origin}/${t.slug}`;
                   const isCopied = copiedLink === `team-${t.id}`;
+
+                  let statusLabel = "";
+                  let statusClass = "online";
+                  if (isTeamUnsaved) {
+                    statusLabel = "Pendente — clique em Salvar";
+                    statusClass = "pending";
+                  } else if (!t.active) {
+                    statusLabel = "Pausada";
+                    statusClass = "paused";
+                  } else if (teamActiveCount === 0) {
+                    statusLabel = "Sem atendentes";
+                    statusClass = "empty";
+                  } else {
+                    statusLabel = `Online (${teamActiveCount} ativo${teamActiveCount > 1 ? "s" : ""})`;
+                    statusClass = "online";
+                  }
+
                   return (
                     <div
                       key={t.id}
@@ -748,8 +1081,8 @@ export default function AttendantPanel() {
                             {t.name}
                             <span className="team-count-badge">{teamAgents.length}</span>
                           </h3>
-                          <span className={t.active ? "active" : "paused"} style={{ fontSize: "11px", fontWeight: 700 }}>
-                            {t.active ? "Ativa" : "Pausada"}
+                          <span className={`team-status-pill ${statusClass}`}>
+                            {statusLabel}
                           </span>
                         </div>
 
@@ -763,24 +1096,48 @@ export default function AttendantPanel() {
                             >
                               {isCopied ? "✓ Copiado" : "Copiar"}
                             </button>
-                            <a
-                              href={`/${t.slug}`}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="campaign-btn"
-                              style={{ textDecoration: "none" }}
-                            >
-                              Abrir ↗
-                            </a>
+                            {isTeamSavedOnServer ? (
+                              <a
+                                href={`/${t.slug}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="campaign-btn"
+                                style={{ textDecoration: "none" }}
+                              >
+                                Abrir ↗
+                              </a>
+                            ) : (
+                              <button
+                                type="button"
+                                className="campaign-btn"
+                                onClick={() =>
+                                  setError(
+                                    `Clique primeiro em "Salvar alterações" para publicar ${teamUrl} online.`,
+                                  )
+                                }
+                              >
+                                Salve p/ abrir
+                              </button>
+                            )}
                           </div>
                         </div>
 
                         <div className="team-toolbar">
-                          <span>Lote: {t.batch_size} clique(s)</span>
+                          <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                            <span>Lote:</span>
+                            <input
+                              type="number"
+                              aria-label={`Cliques por atendente na ${t.name}`}
+                              min={1}
+                              max={1000}
+                              value={t.batch_size}
+                              onChange={(e) => updateTeamBatchStage(t.id, Number(e.target.value))}
+                              style={{ width: "68px", padding: "4px 6px", fontSize: "11px" }}
+                            />
+                          </div>
                           <div className="team-toolbar-actions">
                             <button
                               type="button"
-                              disabled={busy}
                               onClick={() => {
                                 setEditingTeam(t);
                                 setTeamName(t.name);
@@ -793,39 +1150,14 @@ export default function AttendantPanel() {
                             </button>
                             <button
                               type="button"
-                              disabled={busy}
-                              onClick={() =>
-                                run(async () => {
-                                  await request("teams/" + t.id, "PUT", {
-                                    name: t.name,
-                                    slug: t.slug,
-                                    batchSize: t.batch_size,
-                                    active: !t.active,
-                                  });
-                                  await refresh();
-                                })
-                              }
+                              onClick={() => toggleTeamActive(t)}
                             >
                               {t.active ? "Pausar" : "Ativar"}
                             </button>
                             <button
                               type="button"
                               className="danger"
-                              disabled={busy}
-                              onClick={() => {
-                                if (
-                                  confirm(
-                                    `Excluir a equipe "${t.name}"? Os atendentes dela voltarão para o Site Principal.`,
-                                  )
-                                ) {
-                                  run(async () => {
-                                    await request("teams/" + t.id, "DELETE");
-                                    if (editingTeam?.id === t.id) resetTeamForm();
-                                    await refresh();
-                                    setNotice(`Equipe "${t.name}" excluída. Os atendentes retornaram ao Site Principal.`);
-                                  });
-                                }
-                              }}
+                              onClick={() => deleteTeamStage(t)}
                             >
                               Excluir
                             </button>
@@ -836,7 +1168,7 @@ export default function AttendantPanel() {
                       <div className="team-agents-list">
                         {teamAgents.length === 0 ? (
                           <div className="team-empty-drop">
-                            Arraste números para cá para atender exclusivamente em /{t.slug}
+                            Arraste pelo menos 1 número para cá para ativar {origin}/{t.slug}
                           </div>
                         ) : (
                           teamAgents.map(renderAgentCard)
@@ -855,7 +1187,7 @@ export default function AttendantPanel() {
                 className="panel-row"
                 onSubmit={(e) => {
                   e.preventDefault();
-                  saveAgent();
+                  stageSaveAgent();
                 }}
               >
                 <label>
@@ -895,8 +1227,8 @@ export default function AttendantPanel() {
                     ))}
                   </select>
                 </label>
-                <button className="primary" disabled={busy}>
-                  {editing ? "Salvar alterações" : "Adicionar atendente"}
+                <button className="primary">
+                  {editing ? "Aplicar no rascunho" : "Adicionar atendente"}
                 </button>
                 {editing && (
                   <button type="button" onClick={reset}>
@@ -906,6 +1238,8 @@ export default function AttendantPanel() {
               </form>
             </section>
 
+            {renderSaveBar(true)}
+
             {/* TABELA GERAL DE ATENDENTES E LINKS INDIVIDUAIS */}
             <section className="panel-card">
               <div className="panel-row">
@@ -914,7 +1248,8 @@ export default function AttendantPanel() {
                   disabled={busy}
                   onClick={() =>
                     run(async () => {
-                      await refresh();
+                      const totals = await request("stats?period=" + period);
+                      setStats(totals);
                       setNotice("Contadores atualizados.");
                     })
                   }
@@ -1001,7 +1336,7 @@ export default function AttendantPanel() {
                             <td>
                               <div className="panel-actions">
                                 <button
-                                  disabled={busy}
+                                  type="button"
                                   onClick={() => {
                                     setEditing(a);
                                     setName(a.name);
@@ -1012,40 +1347,15 @@ export default function AttendantPanel() {
                                   Editar
                                 </button>
                                 <button
-                                  disabled={busy}
-                                  onClick={() =>
-                                    run(async () => {
-                                      await request("agents/" + a.id, "PUT", {
-                                        ...a,
-                                        active: !a.active,
-                                        team_id: a.team_id || null,
-                                      });
-                                      await refresh();
-                                    })
-                                  }
+                                  type="button"
+                                  onClick={() => toggleAgentActive(a)}
                                 >
                                   {a.active ? "Pausar" : "Ativar"}
                                 </button>
                                 <button
+                                  type="button"
                                   className="danger"
-                                  disabled={busy}
-                                  onClick={() => {
-                                    if (
-                                      confirm(
-                                        "Excluir " +
-                                          a.name +
-                                          " da distribuição? O histórico será preservado.",
-                                      )
-                                    )
-                                      run(async () => {
-                                        await request(
-                                          "agents/" + a.id,
-                                          "DELETE",
-                                        );
-                                        if (editing?.id === a.id) reset();
-                                        await refresh();
-                                      });
-                                  }}
+                                  onClick={() => deleteAgentStage(a)}
                                 >
                                   Excluir
                                 </button>
@@ -1059,9 +1369,7 @@ export default function AttendantPanel() {
                 </div>
               )}
               <p className="panel-note">
-                Cada novo clique em Solicitar Análise entra na fila do respectivo setor. Recarregar
-                a mesma página de atendimento não avança a fila novamente. Os
-                totais anteriores foram preservados.
+                Qualquer alteração feita acima (criar equipe, arrastar número, pausar ou editar) precisa clicar em <strong>Salvar alterações</strong> para entrar no ar.
               </p>
             </section>
             {!!stats?.agents?.some((a: any) => a.deleted) && (
