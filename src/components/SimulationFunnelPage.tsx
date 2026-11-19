@@ -200,11 +200,10 @@ export default function SimulationFunnelPage({ fixedAgent, fixedTeam }: Simulati
       return;
     }
 
-    const profileText = profile === 'PF' ? 'Pessoa Física' : 'Pessoa Jurídica';
-    const formattedAmount = formatCurrencyBRL(amount);
+    const formattedAmount = formatCurrencyExactBRL(amount);
     const formattedPayment = formatCurrencyExactBRL(estimatedPayment);
 
-    const message = `Olá! Vim pelo site da ZM SCD e gostaria de iniciar uma solicitação para análise de crédito.\n\nPerfil: ${profileText}\nValor de interesse: ${formattedAmount}\nPrazo selecionado: ${term} meses\nParcela mensal estimada: ${formattedPayment}\n\nEstou ciente de que esta é uma estimativa inicial e que a solicitação está sujeita à análise cadastral e de crédito.`;
+    const message = `Valor desejado: ${formattedAmount}\nParcelas: ${term}x\nValor Parcela: ${formattedPayment}\n\nEstou ciente de que se trata de uma simulação informativa e de que a solicitação está sujeita à análise cadastral e de aprovação de crédito.`;
 
     routingRef.current = true;
     setRouting(true);
