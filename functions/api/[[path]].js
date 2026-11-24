@@ -123,6 +123,7 @@ async function ensureSchema(db) {
   let hasAgentTeamCol = false;
   let hasReqTeamCol = false;
   let triggersReady = false;
+  let phoneIdxReady = false;
 
   try {
     hasTeams = !!(await db
@@ -151,12 +152,27 @@ async function ensureSchema(db) {
       triggersReady =
         rows.length === 2 &&
         rows.every((r) => String(r.sql || "").includes("team_id"));
+
+      const phoneIdx = await db
+        .prepare(
+          "SELECT sql FROM sqlite_master WHERE type='index' AND name='agents_phone'",
+        )
+        .first();
+      phoneIdxReady =
+        !!phoneIdx && String(phoneIdx.sql || "").includes("team_id");
     }
   } catch {
     return;
   }
 
-  if (hasTeams && hasAgentTeamCol && hasReqTeamCol && triggersReady) return;
+  if (
+    hasTeams &&
+    hasAgentTeamCol &&
+    hasReqTeamCol &&
+    triggersReady &&
+    phoneIdxReady
+  )
+    return;
 
   if (!hasTeams) {
     await db
@@ -190,6 +206,15 @@ async function ensureSchema(db) {
         )
         .run();
     } catch {}
+  }
+
+  if (!phoneIdxReady) {
+    await db.batch([
+      db.prepare("DROP INDEX IF EXISTS agents_phone"),
+      db.prepare(
+        "CREATE UNIQUE INDEX IF NOT EXISTS agents_phone ON agents(phone, COALESCE(team_id, '')) WHERE deleted=0",
+      ),
+    ]);
   }
 
   await db
@@ -643,7 +668,7 @@ async function handle({ request, env, params }) {
       }
 
       const validTeamIds = new Set(normalizedTeams.map((t) => t.id));
-      const seenPhones = new Set();
+      const seenPhoneInScope = new Set();
       const usedPositions = new Set();
       const normalizedAgents = [];
 
@@ -653,9 +678,6 @@ async function handle({ request, env, params }) {
         if (!aName || aName.length > 80)
           fail("Todos os atendentes precisam ter um nome de até 80 caracteres.");
         const phone = normalizePhone(rawAgent.phone);
-        if (seenPhones.has(phone))
-          fail(`Telefone duplicado nos atendentes: ${phone}`, 409);
-        seenPhones.add(phone);
 
         let resolvedTeamId = null;
         if (rawAgent.team_id) {
@@ -664,6 +686,11 @@ async function handle({ request, env, params }) {
             fail(`Equipe de destino inválida para ${aName}.`);
           resolvedTeamId = mapped;
         }
+
+        const phoneScopeKey = `${resolvedTeamId || "__general__"}:${phone}`;
+        if (seenPhoneInScope.has(phoneScopeKey))
+          fail(`Telefone duplicado dentro da mesma equipe: ${phone}`, 409);
+        seenPhoneInScope.add(phoneScopeKey);
 
         const rawId = String(rawAgent.id || "");
         const isExisting = validID(rawId) && existingAgentMap.has(rawId);
@@ -720,11 +747,11 @@ async function handle({ request, env, params }) {
         }
       }
 
-      // 2. Soft-delete teams removed from the board
+      // 2. Soft-delete teams removed from the board (only moving non-deleted, non-colliding agents)
       for (const oldTeamId of existingTeamIds) {
         if (!keptTeamIds.has(oldTeamId)) {
           stmts.push(
-            sql("UPDATE agents SET team_id=NULL WHERE team_id=?", oldTeamId),
+            sql("UPDATE agents SET team_id=NULL WHERE team_id=? AND deleted=0", oldTeamId),
           );
           stmts.push(
             sql("UPDATE teams SET deleted=1,active=0 WHERE id=?", oldTeamId),
@@ -864,7 +891,13 @@ async function handle({ request, env, params }) {
       if (!validID(id)) fail("Equipe inválida.");
       if (request.method === "DELETE") {
         await db.batch([
-          sql("UPDATE agents SET team_id=NULL WHERE team_id=?", id),
+          sql(
+            `UPDATE agents SET deleted=1,active=0,team_id=NULL
+             WHERE team_id=? AND deleted=0
+               AND EXISTS(SELECT 1 FROM agents g WHERE g.team_id IS NULL AND g.deleted=0 AND g.phone=agents.phone)`,
+            id,
+          ),
+          sql("UPDATE agents SET team_id=NULL WHERE team_id=? AND deleted=0", id),
           sql("UPDATE teams SET deleted=1,active=0 WHERE id=?", id),
         ]);
         return json({ ok: true });
@@ -1030,8 +1063,11 @@ export async function onRequest(context) {
   try {
     return await handle(context);
   } catch (e) {
-    if (String(e).includes("UNIQUE constraint failed: agents.phone"))
-      return json({ error: "Esse telefone já está cadastrado." }, 409);
+    if (
+      String(e).includes("UNIQUE constraint failed: agents.phone") ||
+      String(e).includes("UNIQUE constraint failed: index 'agents_phone'")
+    )
+      return json({ error: "Esse telefone já está cadastrado nessa equipe." }, 409);
     if (String(e).includes("UNIQUE constraint failed: teams.slug") || String(e).includes("UNIQUE constraint failed: teams"))
       return json({ error: "Já existe uma equipe com essa URL." }, 409);
     if (e.status) return json({ error: e.message }, e.status);

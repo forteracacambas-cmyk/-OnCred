@@ -16,7 +16,9 @@ const source = await build({
 const schema = (
   (await readFile("migrations/0001_atendimento.sql", "utf8")) +
   "\n" +
-  (await readFile("migrations/0002_equipes.sql", "utf8"))
+  (await readFile("migrations/0002_equipes.sql", "utf8")) +
+  "\n" +
+  (await readFile("migrations/0003_multi_equipe_phone.sql", "utf8"))
 ).replace(/--[^\n]*/g, "");
 const legacySchema = (
   await readFile("migrations/0001_atendimento.sql", "utf8")
@@ -656,5 +658,82 @@ test("reordenar posições dos atendentes por equipe e no site principal via /ap
   assert.equal((await routeTeam(null)).data.name, "Geral 2");
   assert.equal((await routeTeam(null)).data.name, "Geral 1");
 });
+
+test("mesmo número de WhatsApp em até 2+ links (Site Principal e equipe duplicada) com ordens independentes", async (t) => {
+  const s = await setup(t);
+
+  // Salva os mesmos 2 telefones no Site Principal (Ana -> Bia) e em Equipe Duplicada (/equipe2 com Bia -> Ana)
+  const saveRes = await s.admin("save", "POST", {
+    batchSize: 1,
+    teams: [{ id: "temp-t2", name: "Equipe 2", slug: "equipe2", batch_size: 1, active: true }],
+    agents: [
+      { id: "temp-p1", name: "Ana", phone: "11999991111", position: 1, active: true, team_id: null },
+      { id: "temp-p2", name: "Bia", phone: "11999992222", position: 2, active: true, team_id: null },
+      { id: "temp-e1", name: "Bia", phone: "11999992222", position: 3, active: true, team_id: "temp-t2" },
+      { id: "temp-e2", name: "Ana", phone: "11999991111", position: 4, active: true, team_id: "temp-t2" },
+    ],
+  });
+  assert.equal(saveRes.status, 200);
+  assert.equal(saveRes.data.agents.length, 4);
+
+  // Telefone duplicado dentro da MESMA equipe continua bloqueado (409)
+  const dupSameTeam = await s.admin("save", "POST", {
+    batchSize: 1,
+    teams: saveRes.data.teams,
+    agents: [
+      ...saveRes.data.agents,
+      { id: "temp-dup", name: "Ana Repetida", phone: "11999991111", active: true, team_id: null },
+    ],
+  });
+  assert.equal(dupSameTeam.status, 409);
+
+  const routeScope = async (teamSlug) => {
+    const c = await s.visitor();
+    return s.call("route", {
+      method: "POST",
+      cookie: c,
+      body: { analytics: true, handoffId: crypto.randomUUID(), ...(teamSlug ? { team: teamSlug } : {}) },
+    });
+  };
+
+  // Site principal gira Ana -> Bia -> Ana
+  assert.equal((await routeScope(null)).data.phone, "5511999991111");
+  assert.equal((await routeScope(null)).data.phone, "5511999992222");
+  assert.equal((await routeScope(null)).data.phone, "5511999991111");
+
+  // Equipe 2 gira na ordem invertida: Bia -> Ana -> Bia
+  assert.equal((await routeScope("equipe2")).data.phone, "5511999992222");
+  assert.equal((await routeScope("equipe2")).data.phone, "5511999991111");
+  assert.equal((await routeScope("equipe2")).data.phone, "5511999992222");
+
+  // Pausar Ana apenas em Equipe 2 mantém Ana ativa no Site Principal
+  const e2 = saveRes.data.teams[0];
+  const anaE2 = saveRes.data.agents.find((a) => a.team_id === e2.id && a.name === "Ana");
+  await s.admin("agents/" + anaE2.id, "PUT", { ...anaE2, active: false });
+  assert.equal((await routeScope("equipe2")).data.phone, "5511999992222");
+  assert.equal((await routeScope("equipe2")).data.phone, "5511999992222");
+
+  // Excluir Equipe 2 remove a cópia sem colidir com o Site Principal
+  const delRes = await s.admin("teams/" + e2.id, "DELETE");
+  assert.equal(delRes.status, 200);
+  const cfg = (await s.admin("config")).data;
+  assert.equal(cfg.agents.filter((a) => !a.team_id).length, 2);
+});
+
+test("banco legado (apenas 0001) migra índice de telefone por equipe automaticamente", async (t) => {
+  const s = await setup(t, legacySchema);
+  const a1 = await s.add("Ana", "11999991111");
+  const saveRes = await s.admin("save", "POST", {
+    batchSize: 1,
+    teams: [{ id: "temp-e", name: "Setor 2", slug: "setor2", batch_size: 1, active: true }],
+    agents: [
+      { ...a1, team_id: null, active: true },
+      { id: "temp-copy", name: "Ana Setor 2", phone: "11999991111", active: true, team_id: "temp-e" },
+    ],
+  });
+  assert.equal(saveRes.status, 200);
+  assert.equal(saveRes.data.agents.length, 2);
+});
+
 
 

@@ -100,6 +100,47 @@ function normalizeTeamSlugClient(input: string): string {
   return s;
 }
 
+function suggestDuplicateTeamInfo(sourceTeam: Team | null, existingTeams: Team[]) {
+  const takenSlugs = new Set(existingTeams.map((t) => t.slug.toLowerCase()));
+  const takenNames = new Set(existingTeams.map((t) => t.name.trim().toLowerCase()));
+
+  if (!sourceTeam) {
+    let n = 2;
+    while (
+      takenSlugs.has(`equipe${n}`) ||
+      takenNames.has(`equipe ${n}`) ||
+      RESERVED_TEAM_SLUGS.has(`equipe${n}`)
+    ) {
+      n++;
+    }
+    return { name: `Equipe ${n}`, slug: `equipe${n}` };
+  }
+
+  const slugMatch = sourceTeam.slug.match(/^(.*?)(\d+)$/);
+  const nameMatch = sourceTeam.name.trim().match(/^(.*?)(\d+)$/);
+  let n = slugMatch ? Number(slugMatch[2]) + 1 : 2;
+  while (true) {
+    const candidateSlug = (
+      slugMatch ? `${slugMatch[1]}${n}` : `${sourceTeam.slug.slice(0, 44)}-${n}`
+    )
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]/g, "")
+      .slice(0, 49);
+    const candidateName = (
+      nameMatch ? `${nameMatch[1]}${n}` : `${sourceTeam.name.trim()} ${n}`
+    ).slice(0, 80);
+    if (
+      candidateSlug &&
+      !takenSlugs.has(candidateSlug) &&
+      !RESERVED_TEAM_SLUGS.has(candidateSlug) &&
+      !takenNames.has(candidateName.toLowerCase())
+    ) {
+      return { name: candidateName, slug: candidateSlug };
+    }
+    n++;
+  }
+}
+
 function normalizePhoneClient(input: string): string {
   let n = String(input || "").replace(/\D/g, "").replace(/^0+/, "");
   if (n.length === 10 || n.length === 11) {
@@ -185,6 +226,14 @@ export default function AttendantPanel() {
     for (const t of savedSnapshot.teams) map.set(t.id, t);
     return map;
   }, [savedSnapshot.teams]);
+
+  const phoneScopeCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const a of agents) {
+      counts.set(a.phone, (counts.get(a.phone) || 0) + 1);
+    }
+    return counts;
+  }, [agents]);
 
   const copyLink = (url: string, id: string) => {
     try {
@@ -350,14 +399,21 @@ export default function AttendantPanel() {
         throw new Error("Informe um nome de até 80 caracteres.");
       }
       const normalizedPhone = normalizePhoneClient(phone);
+      const targetTeam = agentTeamId || null;
       const duplicate = agents.find(
-        (a) => a.phone === normalizedPhone && (!editing || a.id !== editing.id),
+        (a) =>
+          a.phone === normalizedPhone &&
+          (a.team_id || null) === targetTeam &&
+          (!editing || a.id !== editing.id),
       );
       if (duplicate) {
-        throw new Error(`Esse telefone já está cadastrado no atendente "${duplicate.name}".`);
+        const scopeLabel = targetTeam
+          ? teams.find((t) => t.id === targetTeam)?.name || "mesma equipe"
+          : "Site Principal";
+        throw new Error(
+          `Esse telefone já está cadastrado em "${scopeLabel}" (${duplicate.name}). Você pode usar o mesmo número em outra equipe ou duplicar a coluna.`,
+        );
       }
-
-      const targetTeam = agentTeamId || null;
       if (editing) {
         setAgents((prev) =>
           prev.map((a) =>
@@ -453,6 +509,24 @@ export default function AttendantPanel() {
 
     const sourceTeamId = moving.team_id || null;
     const isSameColumn = sourceTeamId === targetTeamId;
+
+    if (!isSameColumn) {
+      const phoneConflict = agents.find(
+        (a) =>
+          (a.team_id || null) === targetTeamId &&
+          a.phone === moving.phone &&
+          a.id !== agentId,
+      );
+      if (phoneConflict) {
+        const destName = targetTeamId
+          ? teams.find((t) => t.id === targetTeamId)?.name || "essa equipe"
+          : "Site Principal (Geral)";
+        setError(
+          `O número ${formatDisplayPhone(moving.phone)} já está em "${destName}". Para usar o mesmo WhatsApp nos dois links, mantenha uma cópia em cada coluna.`,
+        );
+        return;
+      }
+    }
 
     // Sem alvo de card na mesma coluna e já sendo o último: nada muda
     const currentDestSorted = sortAgentsByPosition(
@@ -567,6 +641,72 @@ export default function AttendantPanel() {
     moveOrReorderAgent(agentId, targetTeamId);
   };
 
+  const copyAgentToTeam = (agentId: string, targetTeamId: string | null) => {
+    const agent = agents.find((a) => a.id === agentId);
+    if (!agent) return;
+    const existsInTarget = agents.some(
+      (a) => (a.team_id || null) === targetTeamId && a.phone === agent.phone,
+    );
+    const destName = targetTeamId
+      ? teams.find((t) => t.id === targetTeamId)?.name || "equipe"
+      : "Site Principal (Geral)";
+    if (existsInTarget) {
+      setError(`O número ${formatDisplayPhone(agent.phone)} já está em "${destName}".`);
+      return;
+    }
+    const maxPos = agents.reduce((m, a) => Math.max(m, a.position || 0), 0);
+    const cloned: Agent = {
+      id: "temp-agent-" + crypto.randomUUID(),
+      name: agent.name,
+      phone: agent.phone,
+      position: maxPos + 1,
+      active: agent.active,
+      deleted: 0,
+      team_id: targetTeamId,
+    };
+    setError("");
+    setAgents((prev) => sortAgentsByPosition([...prev, cloned]));
+    setNotice(
+      `${agent.name} copiado para ${destName}! Você pode mudar a ordem dele lá e clicar em "Salvar alterações" para publicar online.`,
+    );
+  };
+
+  const duplicateColumnAsTeam = (sourceTeamId: string | null) => {
+    const sourceTeam = sourceTeamId ? teams.find((t) => t.id === sourceTeamId) || null : null;
+    const { name: nextName, slug: nextSlug } = suggestDuplicateTeamInfo(sourceTeam, teams);
+    const sourceAgents = sortAgentsByPosition(
+      agents.filter((a) => (a.team_id || null) === sourceTeamId),
+    );
+    const newTeamId = "temp-team-" + crypto.randomUUID();
+    const newTeam: Team = {
+      id: newTeamId,
+      name: nextName,
+      slug: nextSlug,
+      batch_size: sourceTeam ? sourceTeam.batch_size : Math.max(1, Math.min(1000, Math.round(Number(batch) || 1))),
+      active: 1,
+      created_at: Date.now(),
+    };
+    let nextPos = agents.reduce((m, a) => Math.max(m, a.position || 0), 0);
+    const clonedAgents: Agent[] = sourceAgents.map((src) => ({
+      id: "temp-agent-" + crypto.randomUUID(),
+      name: src.name,
+      phone: src.phone,
+      position: ++nextPos,
+      active: src.active,
+      deleted: 0,
+      team_id: newTeamId,
+    }));
+
+    setError("");
+    setTeams((prev) => [...prev, newTeam]);
+    if (clonedAgents.length > 0) {
+      setAgents((prev) => sortAgentsByPosition([...prev, ...clonedAgents]));
+    }
+    setNotice(
+      `Link "${newTeam.name}" (/${newTeam.slug}) duplicado com ${clonedAgents.length} número(s)! Organize a ordem com arrastar ou ↑ ↓, ajuste a URL em "Editar" se quiser e clique em "Salvar alterações".`,
+    );
+  };
+
   const toggleAgentActive = (agent: Agent) => {
     setError("");
     setAgents((prev) =>
@@ -580,7 +720,7 @@ export default function AttendantPanel() {
   const deleteAgentStage = (agent: Agent) => {
     if (
       !confirm(
-        `Remover ${agent.name} da distribuição? O histórico anterior será preservado após salvar.`,
+        `Remover ${agent.name} desta equipe/distribuição? O histórico anterior será preservado após salvar.`,
       )
     )
       return;
@@ -603,15 +743,30 @@ export default function AttendantPanel() {
   const deleteTeamStage = (t: Team) => {
     if (
       !confirm(
-        `Excluir a equipe "${t.name}"? Os atendentes dela voltarão para o Site Principal.`,
+        `Excluir a equipe "${t.name}"? Números exclusivos dela voltarão para o Site Principal; cópias que já existem no Site Principal serão apenas removidas desta equipe.`,
       )
     )
       return;
     setError("");
     setTeams((prev) => prev.filter((item) => item.id !== t.id));
-    setAgents((prev) =>
-      prev.map((a) => (a.team_id === t.id ? { ...a, team_id: null } : a)),
-    );
+    setAgents((prev) => {
+      const generalPhones = new Set(
+        prev.filter((a) => !a.team_id).map((a) => a.phone),
+      );
+      const result: Agent[] = [];
+      for (const a of prev) {
+        if (a.team_id !== t.id) {
+          result.push(a);
+          continue;
+        }
+        if (generalPhones.has(a.phone)) {
+          continue;
+        }
+        generalPhones.add(a.phone);
+        result.push({ ...a, team_id: null });
+      }
+      return result;
+    });
     if (editingTeam?.id === t.id) resetTeamForm();
     setNotice(`Equipe "${t.name}" removida no rascunho. Clique em "Salvar alterações" para aplicar online.`);
   };
@@ -803,6 +958,20 @@ export default function AttendantPanel() {
     const counts = stats?.agents?.find((v: any) => v.id === a.id);
     const isDragging = draggingAgentId === a.id;
     const isNewUnsaved = a.id.startsWith("temp-");
+    const shareCount = phoneScopeCounts.get(a.phone) || 1;
+    const copyTargets = [
+      ...((a.team_id || null) !== null &&
+      !agents.some((x) => !x.team_id && x.phone === a.phone)
+        ? [{ id: "__general__", label: "Site Principal (/)" }]
+        : []),
+      ...teams
+        .filter(
+          (t) =>
+            t.id !== (a.team_id || null) &&
+            !agents.some((x) => x.team_id === t.id && x.phone === a.phone),
+        )
+        .map((t) => ({ id: t.id, label: `${t.name} (/${t.slug})` })),
+    ];
     const dropIndicator =
       dragOverCard?.id === a.id
         ? dragOverCard.placement === "before"
@@ -832,6 +1001,14 @@ export default function AttendantPanel() {
             <div>
               <div className="team-agent-name">
                 {a.name}
+                {shareCount > 1 && (
+                  <span
+                    className="shared-phone-badge"
+                    title={`Este WhatsApp está ativo em ${shareCount} links diferentes com ordens independentes`}
+                  >
+                    Em {shareCount} links
+                  </span>
+                )}
                 {isNewUnsaved && (
                   <span style={{ marginLeft: 6, fontSize: 10, color: "#fbbf24" }}>
                     (Novo — salve)
@@ -890,6 +1067,28 @@ export default function AttendantPanel() {
               </option>
             ))}
           </select>
+          {copyTargets.length > 0 && (
+            <select
+              className="copy-team-select"
+              aria-label={`Copiar ${a.name} para outra equipe`}
+              value=""
+              onChange={(e) => {
+                const val = e.target.value;
+                if (!val) return;
+                copyAgentToTeam(a.id, val === "__general__" ? null : val);
+              }}
+              title="Mantém este número aqui e cria uma cópia em outra equipe para organizar separado"
+            >
+              <option value="" disabled>
+                + Copiar p/ equipe…
+              </option>
+              {copyTargets.map((ct) => (
+                <option key={ct.id} value={ct.id}>
+                  Copiar para {ct.label}
+                </option>
+              ))}
+            </select>
+          )}
           <button
             type="button"
             onClick={() => {
@@ -1106,9 +1305,9 @@ export default function AttendantPanel() {
             <section className="panel-card">
               <div className="panel-section-header">
                 <div>
-                  <h2>Organizador de Equipes e Setores (Arrastar e Reordenar)</h2>
+                  <h2>Organizador de Equipes e Setores (Arrastar, Reordenar e Duplicar)</h2>
                   <p>
-                    Crie equipes com URLs próprias, arraste os números entre colunas ou mude a ordem de atendimento (<strong>1º, 2º, 3º…</strong> com arrastar ou <strong>↑ ↓</strong>) e clique em <strong>Salvar alterações</strong>.
+                    Crie equipes com URLs próprias, use os mesmos números em mais de um link (clicando em <strong>Duplicar</strong> ou <strong>+ Copiar p/ equipe</strong>), arraste ou use <strong>↑ ↓</strong> para definir quem é <strong>1º, 2º, 3º…</strong> em cada URL e clique em <strong>Salvar alterações</strong>.
                   </p>
                 </div>
               </div>
@@ -1229,7 +1428,7 @@ export default function AttendantPanel() {
 
                     <div className="team-toolbar">
                       <span>Lote: {batch} clique(s) por atendente</span>
-                      <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+                      <div className="team-toolbar-actions" style={{ alignItems: "center" }}>
                         <input
                           type="number"
                           aria-label="Cliques por atendente no Site Principal"
@@ -1239,6 +1438,14 @@ export default function AttendantPanel() {
                           onChange={(e) => setBatch(Number(e.target.value))}
                           style={{ width: "74px", padding: "4px 6px", fontSize: "11px" }}
                         />
+                        <button
+                          type="button"
+                          className="duplicate-team-btn"
+                          onClick={() => duplicateColumnAsTeam(null)}
+                          title="Cria uma nova URL de equipe com cópias destes mesmos números para ordenar como quiser"
+                        >
+                          Duplicar link
+                        </button>
                       </div>
                     </div>
                   </div>
@@ -1368,6 +1575,14 @@ export default function AttendantPanel() {
                             />
                           </div>
                           <div className="team-toolbar-actions">
+                            <button
+                              type="button"
+                              className="duplicate-team-btn"
+                              onClick={() => duplicateColumnAsTeam(t.id)}
+                              title="Cria outra URL de equipe com cópias destes mesmos números"
+                            >
+                              Duplicar
+                            </button>
                             <button
                               type="button"
                               onClick={() => {
@@ -1523,6 +1738,7 @@ export default function AttendantPanel() {
                             .findIndex((x) => x.id === a.id) + 1;
                         const campaignUrl = `${origin}/atendimento${a.position}`;
                         const isCopied = copiedLink === a.id;
+                        const shareCount = phoneScopeCounts.get(a.phone) || 1;
                         return (
                           <tr key={a.id}>
                             <td>
@@ -1532,6 +1748,11 @@ export default function AttendantPanel() {
                             <td>
                               <strong>{a.name}</strong>
                               <small>{formatDisplayPhone(a.phone)}</small>
+                              {shareCount > 1 && (
+                                <small style={{ color: "#38bdf8" }}>
+                                  Em {shareCount} links
+                                </small>
+                              )}
                             </td>
                             <td>
                               <span className={`team-badge ${teamObj ? "" : "general"}`}>

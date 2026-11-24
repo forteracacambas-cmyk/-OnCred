@@ -288,7 +288,7 @@ function devApiPlugin() {
           }
 
           let maxPos = state.devAgents.reduce((m: number, a: any) => Math.max(m, a.position || 0), 0);
-          const seenPhones = new Set<string>();
+          const seenPhoneInScope = new Set<string>();
           const usedPos = new Set<number>();
           const newAgents: any[] = [];
           for (const rawA of (data.agents || [])) {
@@ -299,14 +299,15 @@ function devApiPlugin() {
               res.end(JSON.stringify({ error: `Telefone inválido para ${rawA.name || 'atendente'}. Informe DDD + número.` }));
               return;
             }
-            if (seenPhones.has(phone)) {
-              res.statusCode = 409;
-              res.end(JSON.stringify({ error: `Telefone duplicado: ${phone}` }));
-              return;
-            }
-            seenPhones.add(phone);
             const existing = state.devAgents.find((x: any) => x.id === rawA.id && !x.deleted);
             const resolvedTeam = rawA.team_id ? (teamIdMap.get(String(rawA.team_id)) || rawA.team_id) : null;
+            const phoneScopeKey = `${resolvedTeam || '__general__'}:${phone}`;
+            if (seenPhoneInScope.has(phoneScopeKey)) {
+              res.statusCode = 409;
+              res.end(JSON.stringify({ error: `Telefone duplicado dentro da mesma equipe: ${phone}` }));
+              return;
+            }
+            seenPhoneInScope.add(phoneScopeKey);
             const reqPos = Number(rawA.position);
             let pos = rawA.position !== undefined && Number.isInteger(reqPos) && reqPos >= 1 && reqPos <= 1000000
               ? reqPos
@@ -391,7 +392,23 @@ function devApiPlugin() {
           if (req.method === 'DELETE') {
             team.deleted = 1;
             team.active = 0;
-            state.devAgents.forEach((a: any) => { if (a.team_id === id) a.team_id = null; });
+            const generalPhones = new Set(
+              state.devAgents
+                .filter((a: any) => !a.deleted && !a.team_id)
+                .map((a: any) => a.phone),
+            );
+            state.devAgents.forEach((a: any) => {
+              if (a.team_id === id && !a.deleted) {
+                if (generalPhones.has(a.phone)) {
+                  a.deleted = 1;
+                  a.active = 0;
+                  a.team_id = null;
+                } else {
+                  a.team_id = null;
+                  generalPhones.add(a.phone);
+                }
+              }
+            });
             persistState();
             res.end(JSON.stringify({ ok: true }));
             return;
@@ -411,7 +428,18 @@ function devApiPlugin() {
         if (pathname === '/api/admin/agents/move' && req.method === 'POST') {
           const data = await readJson(req);
           const agent = state.devAgents.find((a: any) => a.id === data.agentId && !a.deleted);
-          if (agent) agent.team_id = data.teamId || null;
+          if (agent) {
+            const nextTeam = data.teamId || null;
+            const conflict = state.devAgents.some(
+              (a: any) => !a.deleted && a.id !== agent.id && (a.team_id || null) === nextTeam && a.phone === agent.phone,
+            );
+            if (conflict) {
+              res.statusCode = 409;
+              res.end(JSON.stringify({ error: "Esse telefone já está cadastrado nessa equipe." }));
+              return;
+            }
+            agent.team_id = nextTeam;
+          }
           persistState();
           res.end(JSON.stringify({ ok: true }));
           return;
@@ -426,6 +454,12 @@ function devApiPlugin() {
             res.end(JSON.stringify({ error: "Informe um telefone brasileiro válido com DDD." }));
             return;
           }
+          const targetTeam = data.team_id || null;
+          if (state.devAgents.some((a: any) => !a.deleted && (a.team_id || null) === targetTeam && a.phone === phone)) {
+            res.statusCode = 409;
+            res.end(JSON.stringify({ error: "Esse telefone já está cadastrado nessa equipe." }));
+            return;
+          }
           state.devAgents.push({
             id: crypto.randomUUID(),
             name: String(data.name || '').trim(),
@@ -433,7 +467,7 @@ function devApiPlugin() {
             position: maxPos + 1,
             active: 1,
             deleted: 0,
-            team_id: data.team_id || null,
+            team_id: targetTeam,
           });
           persistState();
           res.end(JSON.stringify({ ok: true }));
@@ -463,11 +497,17 @@ function devApiPlugin() {
               res.end(JSON.stringify({ error: "Informe um telefone brasileiro válido com DDD." }));
               return;
             }
+            const nextTeam = data.team_id || null;
+            if (state.devAgents.some((a: any) => !a.deleted && a.id !== agent.id && (a.team_id || null) === nextTeam && a.phone === phone)) {
+              res.statusCode = 409;
+              res.end(JSON.stringify({ error: "Esse telefone já está cadastrado nessa equipe." }));
+              return;
+            }
             agent.name = String(data.name || agent.name).trim();
             agent.phone = phone;
             agent.active = data.active ? 1 : 0;
             agent.position = Number.isInteger(data.position) ? data.position : agent.position;
-            agent.team_id = data.team_id || null;
+            agent.team_id = nextTeam;
             persistState();
             res.end(JSON.stringify({ ok: true }));
             return;
