@@ -596,3 +596,65 @@ test("ensureSchema repara banco em estado parcial (tabela teams existe mas falta
   assert.equal(r.data.phone, "5511977776666");
 });
 
+test("reordenar posições dos atendentes por equipe e no site principal via /api/admin/save altera a ordem de atendimento", async (t) => {
+  const s = await setup(t);
+
+  const initialSave = await s.admin("save", "POST", {
+    batchSize: 1,
+    teams: [{ id: "temp-t1", name: "Firma 1", slug: "firma1", batch_size: 1, active: true }],
+    agents: [
+      { id: "temp-g1", name: "Geral 1", phone: "11911110001", position: 1, active: true, team_id: null },
+      { id: "temp-g2", name: "Geral 2", phone: "11911110002", position: 2, active: true, team_id: null },
+      { id: "temp-f1", name: "Firma A", phone: "11922220001", position: 3, active: true, team_id: "temp-t1" },
+      { id: "temp-f2", name: "Firma B", phone: "11922220002", position: 4, active: true, team_id: "temp-t1" },
+      { id: "temp-f3", name: "Firma C", phone: "11922220003", position: 5, active: true, team_id: "temp-t1" },
+    ],
+  });
+  assert.equal(initialSave.status, 200);
+
+  const team = initialSave.data.teams[0];
+  const byName = (name) => initialSave.data.agents.find((a) => a.name === name);
+
+  const routeTeam = async (teamSlug) => {
+    const c = await s.visitor();
+    return s.call("route", {
+      method: "POST",
+      cookie: c,
+      body: { analytics: true, handoffId: crypto.randomUUID(), ...(teamSlug ? { team: teamSlug } : {}) },
+    });
+  };
+
+  // Ordem inicial: Firma A -> Firma B
+  assert.equal((await routeTeam("firma1")).data.name, "Firma A");
+  assert.equal((await routeTeam("firma1")).data.name, "Firma B");
+
+  // Reordena dentro da Firma 1 (C -> 1º, A -> 2º, B -> 3º) e inverte Geral (Geral 2 -> 1º, Geral 1 -> 2º)
+  const reorderSave = await s.admin("save", "POST", {
+    batchSize: 1,
+    teams: [{ id: team.id, name: team.name, slug: team.slug, batch_size: 1, active: true }],
+    agents: [
+      { ...byName("Geral 2"), position: 1, active: true },
+      { ...byName("Geral 1"), position: 2, active: true },
+      { ...byName("Firma C"), position: 3, active: true },
+      { ...byName("Firma A"), position: 4, active: true },
+      { ...byName("Firma B"), position: 5, active: true },
+    ],
+  });
+  assert.equal(reorderSave.status, 200);
+
+  // Confirma persistência no /api/admin/config
+  const cfg = (await s.admin("config")).data;
+  const firmaAgents = cfg.agents.filter((a) => a.team_id === team.id).map((a) => a.name);
+  assert.deepEqual(firmaAgents, ["Firma C", "Firma A", "Firma B"]);
+
+  // Próximos clientes na Firma 1 devem seguir a nova ordem exata (C -> A -> B)
+  assert.equal((await routeTeam("firma1")).data.name, "Firma C");
+  assert.equal((await routeTeam("firma1")).data.name, "Firma A");
+  assert.equal((await routeTeam("firma1")).data.name, "Firma B");
+
+  // Próximos clientes no Site Principal devem seguir a nova ordem exata (Geral 2 -> Geral 1)
+  assert.equal((await routeTeam(null)).data.name, "Geral 2");
+  assert.equal((await routeTeam(null)).data.name, "Geral 1");
+});
+
+

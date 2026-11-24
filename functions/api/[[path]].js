@@ -241,11 +241,11 @@ function visitorCookie(request, id) {
   const domain = ""; // Host-only cookie: isolated from SANTS and other Pages projects.
   return `oncred_visitor=${id}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000${domain}${new URL(request.url).protocol === "https:" ? "; Secure" : ""}`;
 }
-async function body(request) {
+async function body(request, maxBytes = 8192) {
   if (!request.headers.get("Content-Type")?.startsWith("application/json"))
     fail("Formato inválido.", 415);
   const text = await request.text();
-  if (text.length > 8192) fail("Solicitação muito grande.", 413);
+  if (text.length > maxBytes) fail("Solicitação muito grande.", 413);
   try {
     return JSON.parse(text);
   } catch {
@@ -574,7 +574,7 @@ async function handle({ request, env, params }) {
       return json({ ok: true });
     }
     if (path === "/api/admin/save" && request.method === "POST") {
-      const data = await body(request);
+      const data = await body(request, 65536);
       const batchSize = Number(data.batchSize);
       if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 1000)
         fail("O lote do Site Principal deve ser de 1 a 1000.");
@@ -583,16 +583,31 @@ async function handle({ request, env, params }) {
 
       const existingRes = await db.batch([
         sql("SELECT id FROM teams WHERE deleted=0"),
-        sql("SELECT id, position FROM agents WHERE deleted=0"),
+        sql("SELECT id, position, team_id, active FROM agents WHERE deleted=0 ORDER BY position, id"),
         sql("SELECT COALESCE(MAX(position),0) AS max_pos FROM agents"),
       ]);
       const existingTeamIds = new Set(
         (existingRes[0].results || []).map((r) => r.id),
       );
-      const existingAgentPos = new Map(
-        (existingRes[1].results || []).map((r) => [r.id, r.position]),
+      const existingAgentMap = new Map(
+        (existingRes[1].results || []).map((r) => [r.id, r]),
       );
       let nextPos = Number(existingRes[2].results?.[0]?.max_pos || 0);
+
+      const buildScopeOrder = (rows) => {
+        const map = new Map();
+        const sorted = [...rows].sort(
+          (a, b) => (a.position - b.position) || String(a.id).localeCompare(String(b.id)),
+        );
+        for (const r of sorted) {
+          if (!r.active) continue;
+          const key = r.team_id || "__general__";
+          if (!map.has(key)) map.set(key, []);
+          map.get(key).push(r.id);
+        }
+        return new Map([...map.entries()].map(([k, ids]) => [k, ids.join(",")]));
+      };
+      const beforeScopeOrder = buildScopeOrder(existingRes[1].results || []);
 
       const teamIdMap = new Map();
       const seenSlugs = new Set();
@@ -629,6 +644,7 @@ async function handle({ request, env, params }) {
 
       const validTeamIds = new Set(normalizedTeams.map((t) => t.id));
       const seenPhones = new Set();
+      const usedPositions = new Set();
       const normalizedAgents = [];
 
       for (const rawAgent of data.agents) {
@@ -650,9 +666,25 @@ async function handle({ request, env, params }) {
         }
 
         const rawId = String(rawAgent.id || "");
-        const isExisting = validID(rawId) && existingAgentPos.has(rawId);
+        const isExisting = validID(rawId) && existingAgentMap.has(rawId);
         const resolvedId = isExisting ? rawId : uuid();
-        const position = isExisting ? existingAgentPos.get(rawId) : ++nextPos;
+
+        const reqPosNum = Number(rawAgent.position);
+        let position =
+          rawAgent.position !== undefined &&
+          Number.isInteger(reqPosNum) &&
+          reqPosNum >= 1 &&
+          reqPosNum <= 1000000
+            ? reqPosNum
+            : isExisting
+            ? existingAgentMap.get(rawId).position
+            : ++nextPos;
+
+        while (usedPositions.has(position)) {
+          position = ++nextPos;
+        }
+        usedPositions.add(position);
+        if (position > nextPos) nextPos = position;
 
         normalizedAgents.push({
           id: resolvedId,
@@ -665,15 +697,22 @@ async function handle({ request, env, params }) {
         });
       }
 
+      const afterScopeOrder = buildScopeOrder(normalizedAgents);
+      const generalOrderChanged =
+        (beforeScopeOrder.get("__general__") || "") !==
+        (afterScopeOrder.get("__general__") || "");
+
       const keptTeamIds = new Set(normalizedTeams.filter((t) => t.isExisting).map((t) => t.id));
       const keptAgentIds = new Set(normalizedAgents.filter((a) => a.isExisting).map((a) => a.id));
 
       const stmts = [
-        sql("UPDATE settings SET batch_size=? WHERE id=1", batchSize),
+        generalOrderChanged
+          ? sql("UPDATE settings SET batch_size=?, cursor_agent=NULL, used=0 WHERE id=1", batchSize)
+          : sql("UPDATE settings SET batch_size=? WHERE id=1", batchSize),
       ];
 
       // 1. Soft-delete agents removed from the board first so freed phones are immediately reusable
-      for (const oldId of existingAgentPos.keys()) {
+      for (const oldId of existingAgentMap.keys()) {
         if (!keptAgentIds.has(oldId)) {
           stmts.push(
             sql("UPDATE agents SET deleted=1,active=0,team_id=NULL WHERE id=?", oldId),
@@ -693,19 +732,30 @@ async function handle({ request, env, params }) {
         }
       }
 
-      // 3. Upsert teams
+      // 3. Upsert teams (resetting cursor when that team's active order changed)
       const now = Date.now();
       for (const t of normalizedTeams) {
         if (t.isExisting) {
+          const teamOrderChanged =
+            (beforeScopeOrder.get(t.id) || "") !== (afterScopeOrder.get(t.id) || "");
           stmts.push(
-            sql(
-              "UPDATE teams SET name=?,slug=?,batch_size=?,active=? WHERE id=? AND deleted=0",
-              t.name,
-              t.slug,
-              t.batch_size,
-              t.active,
-              t.id,
-            ),
+            teamOrderChanged
+              ? sql(
+                  "UPDATE teams SET name=?,slug=?,batch_size=?,active=?,cursor_agent=NULL,used=0 WHERE id=? AND deleted=0",
+                  t.name,
+                  t.slug,
+                  t.batch_size,
+                  t.active,
+                  t.id,
+                )
+              : sql(
+                  "UPDATE teams SET name=?,slug=?,batch_size=?,active=? WHERE id=? AND deleted=0",
+                  t.name,
+                  t.slug,
+                  t.batch_size,
+                  t.active,
+                  t.id,
+                ),
           );
         } else {
           stmts.push(

@@ -168,7 +168,8 @@ export default function AttendantPanel() {
 
   // Drag-and-drop state
   const [draggingAgentId, setDraggingAgentId] = useState<string | null>(null),
-    [dragOverTarget, setDragOverTarget] = useState<string | null>(null);
+    [dragOverTarget, setDragOverTarget] = useState<string | null>(null),
+    [dragOverCard, setDragOverCard] = useState<{ id: string; placement: "before" | "after" } | null>(null);
 
   const origin = typeof window !== "undefined" ? window.location.origin : "https://zmscd.online";
 
@@ -209,8 +210,11 @@ export default function AttendantPanel() {
     }
   };
 
+  const sortAgentsByPosition = (list: Agent[]) =>
+    [...list].sort((a, b) => (a.position - b.position) || a.id.localeCompare(b.id));
+
   const applyServerSnapshot = (config: { batchSize: number; agents: Agent[]; teams: Team[] }) => {
-    const loadedAgents = config.agents || [];
+    const loadedAgents = sortAgentsByPosition(config.agents || []);
     const loadedTeams = config.teams || [];
     const loadedBatch = Number(config.batchSize) || 1;
     setSavedSnapshot({
@@ -437,17 +441,130 @@ export default function AttendantPanel() {
     }
   };
 
-  const moveAgentToTeam = (agentId: string, targetTeamId: string | null) => {
-    const agent = agents.find((a) => a.id === agentId);
-    if (!agent || (agent.team_id || null) === targetTeamId) return;
-    setError("");
-    setAgents((prev) =>
-      prev.map((a) => (a.id === agentId ? { ...a, team_id: targetTeamId } : a)),
+  const moveOrReorderAgent = (
+    agentId: string,
+    targetTeamId: string | null,
+    targetAgentId?: string,
+    placement: "before" | "after" = "before",
+  ) => {
+    if (targetAgentId === agentId) return;
+    const moving = agents.find((a) => a.id === agentId);
+    if (!moving) return;
+
+    const sourceTeamId = moving.team_id || null;
+    const isSameColumn = sourceTeamId === targetTeamId;
+
+    // Sem alvo de card na mesma coluna e já sendo o último: nada muda
+    const currentDestSorted = sortAgentsByPosition(
+      agents.filter((a) => (a.team_id || null) === targetTeamId),
     );
+    if (isSameColumn && !targetAgentId && currentDestSorted[currentDestSorted.length - 1]?.id === agentId) {
+      return;
+    }
+
+    const destWithoutMoving = currentDestSorted.filter((a) => a.id !== agentId);
+    let insertIdx = destWithoutMoving.length;
+    if (targetAgentId) {
+      const idx = destWithoutMoving.findIndex((a) => a.id === targetAgentId);
+      if (idx !== -1) {
+        insertIdx = placement === "after" ? idx + 1 : idx;
+      }
+    }
+
+    const updatedDest = [...destWithoutMoving];
+    const movedEntry: Agent = { ...moving, team_id: targetTeamId };
+    updatedDest.splice(insertIdx, 0, movedEntry);
+
+    let nextPositions = new Map<string, number>();
+    if (isSameColumn) {
+      const slots = currentDestSorted.map((a) => a.position).sort((x, y) => x - y);
+      updatedDest.forEach((a, i) => {
+        nextPositions.set(a.id, slots[i] ?? i + 1);
+      });
+    } else if (!targetAgentId) {
+      // Mover para o fim de outra coluna preserva posições dos demais e evita colisão
+      const maxPos = agents.reduce((m, a) => Math.max(m, a.position || 0), 0);
+      nextPositions.set(agentId, maxPos + 1);
+    } else {
+      // Inserir em posição específica de outra coluna usa exatamente o pool de posições dessa coluna + o item movido
+      const combinedSlots = [...currentDestSorted.map((a) => a.position), moving.position].sort(
+        (x, y) => x - y,
+      );
+      updatedDest.forEach((a, i) => {
+        nextPositions.set(a.id, combinedSlots[i] ?? i + 1);
+      });
+    }
+
+    const nextAgents = sortAgentsByPosition(
+      agents.map((a) => {
+        if (a.id === agentId) {
+          return {
+            ...a,
+            team_id: targetTeamId,
+            position: nextPositions.get(a.id) ?? a.position,
+          };
+        }
+        if (nextPositions.has(a.id)) {
+          return { ...a, position: nextPositions.get(a.id)! };
+        }
+        return a;
+      }),
+    );
+
+    setError("");
+    setAgents(nextAgents);
+
     const targetName = targetTeamId
       ? teams.find((t) => t.id === targetTeamId)?.name || "equipe"
       : "Site Principal (Geral)";
-    setNotice(`${agent.name} movido para ${targetName}. Clique em "Salvar alterações" para publicar online.`);
+    const newRank = updatedDest.findIndex((a) => a.id === agentId) + 1;
+    if (isSameColumn) {
+      setNotice(
+        `Ordem em ${targetName} atualizada (${moving.name} agora é ${newRank}º). Clique em "Salvar alterações" para aplicar online.`,
+      );
+    } else {
+      setNotice(
+        `${moving.name} movido para ${targetName} (${newRank}º). Clique em "Salvar alterações" para publicar online.`,
+      );
+    }
+  };
+
+  const nudgeAgentOrder = (agentId: string, direction: -1 | 1) => {
+    const target = agents.find((a) => a.id === agentId);
+    if (!target) return;
+    const teamScope = target.team_id || null;
+    const colAgents = sortAgentsByPosition(
+      agents.filter((a) => (a.team_id || null) === teamScope),
+    );
+    const idx = colAgents.findIndex((a) => a.id === agentId);
+    const swapIdx = idx + direction;
+    if (idx === -1 || swapIdx < 0 || swapIdx >= colAgents.length) return;
+
+    const currentAgent = colAgents[idx];
+    const neighbor = colAgents[swapIdx];
+
+    const nextAgents = sortAgentsByPosition(
+      agents.map((a) => {
+        if (a.id === currentAgent.id) return { ...a, position: neighbor.position };
+        if (a.id === neighbor.id) return { ...a, position: currentAgent.position };
+        return a;
+      }),
+    );
+
+    setError("");
+    setAgents(nextAgents);
+    const scopeName = teamScope
+      ? teams.find((t) => t.id === teamScope)?.name || "equipe"
+      : "Site Principal (Geral)";
+    setNotice(
+      `Ordem em ${scopeName} atualizada (${target.name} agora é ${swapIdx + 1}º). Clique em "Salvar alterações" para publicar online.`,
+    );
+  };
+
+  const moveAgentToTeam = (agentId: string, targetTeamId: string | null) => {
+    const agent = agents.find((a) => a.id === agentId);
+    if (!agent || (agent.team_id || null) === targetTeamId) return;
+    moveOrReorderAgent(agentId, targetTeamId);
   };
 
   const toggleAgentActive = (agent: Agent) => {
@@ -583,11 +700,13 @@ export default function AttendantPanel() {
   const handleDragEnd = () => {
     setDraggingAgentId(null);
     setDragOverTarget(null);
+    setDragOverCard(null);
   };
 
   const handleDragOverColumn = (e: React.DragEvent, targetKey: string) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = "move";
+    if (dragOverCard) setDragOverCard(null);
     if (dragOverTarget !== targetKey) {
       setDragOverTarget(targetKey);
     }
@@ -598,8 +717,45 @@ export default function AttendantPanel() {
     const droppedAgentId = e.dataTransfer.getData("text/plain") || draggingAgentId;
     setDraggingAgentId(null);
     setDragOverTarget(null);
+    setDragOverCard(null);
     if (droppedAgentId) {
-      moveAgentToTeam(droppedAgentId, targetTeamId);
+      moveOrReorderAgent(droppedAgentId, targetTeamId);
+    }
+  };
+
+  const handleDragOverCard = (e: React.DragEvent<HTMLDivElement>, targetAgentId: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (draggingAgentId === targetAgentId) return;
+    e.dataTransfer.dropEffect = "move";
+    const rect = e.currentTarget.getBoundingClientRect();
+    const placement: "before" | "after" = e.clientY < rect.top + rect.height / 2 ? "before" : "after";
+    if (dragOverTarget) setDragOverTarget(null);
+    if (!dragOverCard || dragOverCard.id !== targetAgentId || dragOverCard.placement !== placement) {
+      setDragOverCard({ id: targetAgentId, placement });
+    }
+  };
+
+  const handleDropOnCard = (
+    e: React.DragEvent<HTMLDivElement>,
+    targetTeamId: string | null,
+    targetAgentId: string,
+  ) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const droppedAgentId = e.dataTransfer.getData("text/plain") || draggingAgentId;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const placement: "before" | "after" =
+      dragOverCard?.id === targetAgentId
+        ? dragOverCard.placement
+        : e.clientY < rect.top + rect.height / 2
+        ? "before"
+        : "after";
+    setDraggingAgentId(null);
+    setDragOverTarget(null);
+    setDragOverCard(null);
+    if (droppedAgentId && droppedAgentId !== targetAgentId) {
+      moveOrReorderAgent(droppedAgentId, targetTeamId, targetAgentId, placement);
     }
   };
 
@@ -643,22 +799,36 @@ export default function AttendantPanel() {
     </div>
   );
 
-  const renderAgentCard = (a: Agent) => {
+  const renderAgentCard = (a: Agent, indexInColumn: number, columnLength: number) => {
     const counts = stats?.agents?.find((v: any) => v.id === a.id);
     const isDragging = draggingAgentId === a.id;
     const isNewUnsaved = a.id.startsWith("temp-");
+    const dropIndicator =
+      dragOverCard?.id === a.id
+        ? dragOverCard.placement === "before"
+          ? "drop-before"
+          : "drop-after"
+        : "";
     return (
       <div
         key={a.id}
         draggable
         onDragStart={(e) => handleDragStart(e, a.id)}
         onDragEnd={handleDragEnd}
-        className={`team-agent-card ${isDragging ? "dragging" : ""}`}
-        title="Arraste para mover este número para outra equipe ou para o Site Principal"
+        onDragOver={(e) => handleDragOverCard(e, a.id)}
+        onDrop={(e) => handleDropOnCard(e, a.team_id || null, a.id)}
+        className={`team-agent-card ${isDragging ? "dragging" : ""} ${dropIndicator}`}
+        title="Arraste para cima/baixo para mudar a ordem ou arraste para outra equipe"
       >
         <div className="team-agent-top">
           <div className="team-agent-info">
             <span className="drag-grip" aria-hidden="true">⋮⋮</span>
+            <span
+              className={`agent-order-badge ${indexInColumn === 0 ? "is-first" : ""}`}
+              title={`${indexInColumn + 1}º na ordem de atendimento desta coluna`}
+            >
+              {indexInColumn + 1}º
+            </span>
             <div>
               <div className="team-agent-name">
                 {a.name}
@@ -671,9 +841,33 @@ export default function AttendantPanel() {
               <div className="team-agent-phone">{formatDisplayPhone(a.phone)}</div>
             </div>
           </div>
-          <span className={a.active ? "active" : "paused"} style={{ fontSize: "11px", fontWeight: 700 }}>
-            {a.active ? "Ativo" : "Pausado"}
-          </span>
+          <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+            <div className="team-order-buttons">
+              <button
+                type="button"
+                className="order-step-btn"
+                disabled={indexInColumn === 0}
+                onClick={() => nudgeAgentOrder(a.id, -1)}
+                title="Subir na ordem (atender antes)"
+                aria-label={`Subir ${a.name} na ordem`}
+              >
+                ↑
+              </button>
+              <button
+                type="button"
+                className="order-step-btn"
+                disabled={indexInColumn === columnLength - 1}
+                onClick={() => nudgeAgentOrder(a.id, 1)}
+                title="Descer na ordem (atender depois)"
+                aria-label={`Descer ${a.name} na ordem`}
+              >
+                ↓
+              </button>
+            </div>
+            <span className={a.active ? "active" : "paused"} style={{ fontSize: "11px", fontWeight: 700 }}>
+              {a.active ? "Ativo" : "Pausado"}
+            </span>
+          </div>
         </div>
 
         <div className="team-agent-meta">
@@ -718,7 +912,8 @@ export default function AttendantPanel() {
     );
   };
 
-  const generalAgents = agents.filter((a) => !a.team_id);
+  const sortedAgents = sortAgentsByPosition(agents);
+  const generalAgents = sortedAgents.filter((a) => !a.team_id);
   const generalActiveCount = generalAgents.filter((a) => a.active).length;
 
   return (
@@ -911,9 +1106,9 @@ export default function AttendantPanel() {
             <section className="panel-card">
               <div className="panel-section-header">
                 <div>
-                  <h2>Organizador de Equipes e Setores (Arrastar e Soltar)</h2>
+                  <h2>Organizador de Equipes e Setores (Arrastar e Reordenar)</h2>
                   <p>
-                    Crie equipes com URLs próprias, arraste os números para as colunas e clique em <strong>Salvar alterações</strong> para publicar online.
+                    Crie equipes com URLs próprias, arraste os números entre colunas ou mude a ordem de atendimento (<strong>1º, 2º, 3º…</strong> com arrastar ou <strong>↑ ↓</strong>) e clique em <strong>Salvar alterações</strong>.
                   </p>
                 </div>
               </div>
@@ -1054,27 +1249,32 @@ export default function AttendantPanel() {
                         Arraste números para cá para fazê-los girar no Site Principal ({origin}/)
                       </div>
                     ) : (
-                      generalAgents.map(renderAgentCard)
+                      generalAgents.map((a, idx) => renderAgentCard(a, idx, generalAgents.length))
                     )}
                   </div>
                 </div>
 
                 {/* Colunas Dinâmicas: Equipes Criadas */}
                 {teams.map((t) => {
-                  const teamAgents = agents.filter((a) => a.team_id === t.id);
+                  const teamAgents = sortedAgents.filter((a) => a.team_id === t.id);
                   const teamActiveCount = teamAgents.filter((a) => a.active).length;
                   const savedT = savedTeamMap.get(t.id);
                   const isTeamSavedOnServer = !!savedT && savedT.slug === t.slug;
+                  const prevTeamKey = sortAgentsByPosition(
+                    savedSnapshot.agents.filter((sa) => sa.team_id === t.id),
+                  )
+                    .map((sa) => `${sa.id}:${sa.active}:${sa.position}`)
+                    .join("|");
+                  const currTeamKey = teamAgents
+                    .map((a) => `${a.id}:${a.active}:${a.position}`)
+                    .join("|");
                   const isTeamUnsaved =
                     !savedT ||
                     savedT.slug !== t.slug ||
                     savedT.name !== t.name ||
                     savedT.batch_size !== t.batch_size ||
                     savedT.active !== t.active ||
-                    teamAgents.some((a) => {
-                      const prevA = savedSnapshot.agents.find((sa) => sa.id === a.id);
-                      return !prevA || prevA.team_id !== t.id || prevA.active !== a.active;
-                    });
+                    prevTeamKey !== currTeamKey;
                   const teamUrl = `${origin}/${t.slug}`;
                   const isCopied = copiedLink === `team-${t.id}`;
 
@@ -1203,7 +1403,7 @@ export default function AttendantPanel() {
                             Arraste pelo menos 1 número para cá para ativar {origin}/{t.slug}
                           </div>
                         ) : (
-                          teamAgents.map(renderAgentCard)
+                          teamAgents.map((a, idx) => renderAgentCard(a, idx, teamAgents.length))
                         )}
                       </div>
                     </div>
@@ -1310,18 +1510,25 @@ export default function AttendantPanel() {
                       </tr>
                     </thead>
                     <tbody>
-                      {agents.map((a) => {
+                      {sortedAgents.map((a) => {
                         const counts = stats?.agents?.find(
                           (v: any) => v.id === a.id,
                         );
                         const teamObj = a.team_id
                           ? teams.find((t) => t.id === a.team_id)
                           : null;
+                        const scopeRank =
+                          sortedAgents
+                            .filter((x) => (x.team_id || null) === (a.team_id || null))
+                            .findIndex((x) => x.id === a.id) + 1;
                         const campaignUrl = `${origin}/atendimento${a.position}`;
                         const isCopied = copiedLink === a.id;
                         return (
                           <tr key={a.id}>
-                            <td>{a.position}</td>
+                            <td>
+                              <strong>{scopeRank}º</strong>
+                              <small>ID #{a.position}</small>
+                            </td>
                             <td>
                               <strong>{a.name}</strong>
                               <small>{formatDisplayPhone(a.phone)}</small>

@@ -53,7 +53,7 @@ function devApiPlugin() {
     ],
     devAgents: [
       { id: "22222222-2222-2222-2222-222222222201", name: "Atendente Comercial 1", phone: "551130420181", position: 1, active: 1, deleted: 0, team_id: null },
-      { id: "22222222-2222-2222-2222-222222222202", name: "Atendente Comercial 2", phone: "551130420181", position: 2, active: 1, deleted: 0, team_id: "11111111-1111-1111-1111-111111111111" },
+      { id: "22222222-2222-2222-2222-222222222202", name: "Atendente Comercial 2", phone: "551130420182", position: 2, active: 1, deleted: 0, team_id: "11111111-1111-1111-1111-111111111111" },
     ],
     batchSize: 1,
     generalCursor: 0,
@@ -225,7 +225,9 @@ function devApiPlugin() {
           }
           res.end(JSON.stringify({
             batchSize: state.batchSize,
-            agents: state.devAgents.filter((a: any) => !a.deleted),
+            agents: [...state.devAgents]
+              .filter((a: any) => !a.deleted)
+              .sort((a: any, b: any) => (a.position - b.position) || String(a.id).localeCompare(String(b.id))),
             teams: state.devTeams.filter((t: any) => !t.deleted),
           }));
           return;
@@ -239,6 +241,21 @@ function devApiPlugin() {
             res.end(JSON.stringify({ error: "O lote do Site Principal deve ser de 1 a 1000." }));
             return;
           }
+
+          const buildDevOrder = (rows: any[]) => {
+            const map = new Map<string, string[]>();
+            const sorted = [...rows]
+              .filter((r) => !r.deleted && r.active)
+              .sort((a, b) => (a.position - b.position) || String(a.id).localeCompare(String(b.id)));
+            for (const r of sorted) {
+              const key = r.team_id || '__general__';
+              if (!map.has(key)) map.set(key, []);
+              map.get(key)!.push(r.id);
+            }
+            return new Map([...map.entries()].map(([k, ids]) => [k, ids.join(',')]));
+          };
+          const beforeOrder = buildDevOrder(state.devAgents);
+
           const teamIdMap = new Map<string, string>();
           const seenSlugs = new Set<string>();
           const newTeams: any[] = [];
@@ -272,6 +289,7 @@ function devApiPlugin() {
 
           let maxPos = state.devAgents.reduce((m: number, a: any) => Math.max(m, a.position || 0), 0);
           const seenPhones = new Set<string>();
+          const usedPos = new Set<number>();
           const newAgents: any[] = [];
           for (const rawA of (data.agents || [])) {
             if (!rawA || rawA.deleted) continue;
@@ -289,15 +307,36 @@ function devApiPlugin() {
             seenPhones.add(phone);
             const existing = state.devAgents.find((x: any) => x.id === rawA.id && !x.deleted);
             const resolvedTeam = rawA.team_id ? (teamIdMap.get(String(rawA.team_id)) || rawA.team_id) : null;
+            const reqPos = Number(rawA.position);
+            let pos = rawA.position !== undefined && Number.isInteger(reqPos) && reqPos >= 1 && reqPos <= 1000000
+              ? reqPos
+              : existing
+              ? existing.position
+              : ++maxPos;
+            while (usedPos.has(pos)) pos = ++maxPos;
+            usedPos.add(pos);
+            if (pos > maxPos) maxPos = pos;
+
             newAgents.push({
               id: existing ? existing.id : crypto.randomUUID(),
               name: String(rawA.name || '').trim(),
               phone,
-              position: existing ? existing.position : ++maxPos,
+              position: pos,
               active: rawA.active === false || rawA.active === 0 ? 0 : 1,
               deleted: 0,
               team_id: resolvedTeam,
             });
+          }
+
+          newAgents.sort((a, b) => (a.position - b.position) || String(a.id).localeCompare(String(b.id)));
+          const afterOrder = buildDevOrder(newAgents);
+          if ((beforeOrder.get('__general__') || '') !== (afterOrder.get('__general__') || '')) {
+            state.generalCursor = 0;
+          }
+          for (const t of newTeams) {
+            if ((beforeOrder.get(t.id) || '') !== (afterOrder.get(t.id) || '')) {
+              t.cursor = 0;
+            }
           }
 
           state.batchSize = nextBatch;

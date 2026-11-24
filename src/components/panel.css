@@ -505,6 +505,16 @@
   border-style: dashed;
 }
 
+.team-agent-card.drop-before {
+  border-top: 3px solid #34d399;
+  box-shadow: 0 -4px 12px rgba(52, 211, 153, 0.25);
+}
+
+.team-agent-card.drop-after {
+  border-bottom: 3px solid #34d399;
+  box-shadow: 0 4px 12px rgba(52, 211, 153, 0.25);
+}
+
 .team-agent-top {
   display: flex;
   align-items: flex-start;
@@ -526,6 +536,55 @@
   user-select: none;
   padding-top: 2px;
   font-size: 14px;
+}
+
+.agent-order-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 800;
+  background: #1e293b;
+  color: #cbd5e1;
+  border: 1px solid #334155;
+  flex-shrink: 0;
+}
+
+.agent-order-badge.is-first {
+  background: rgba(16, 185, 129, 0.16);
+  color: #6ee7b7;
+  border-color: rgba(16, 185, 129, 0.45);
+}
+
+.team-order-buttons {
+  display: inline-flex;
+  gap: 3px;
+}
+
+.attendant-panel button.order-step-btn {
+  padding: 2px 7px;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.4;
+  border-radius: 6px;
+  background: #0f172a;
+  color: #cbd5e1;
+  border: 1px solid #334155;
+}
+
+.attendant-panel button.order-step-btn:hover:not(:disabled) {
+  background: #1e3a5f;
+  color: #ffffff;
+  border-color: #60a5fa;
+}
+
+.attendant-panel button.order-step-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
 }
 
 .team-agent-name {
