@@ -18,7 +18,9 @@ const schema = (
   "\n" +
   (await readFile("migrations/0002_equipes.sql", "utf8")) +
   "\n" +
-  (await readFile("migrations/0003_multi_equipe_phone.sql", "utf8"))
+  (await readFile("migrations/0003_multi_equipe_phone.sql", "utf8")) +
+  "\n" +
+  (await readFile("migrations/0004_team_sync_mode.sql", "utf8"))
 ).replace(/--[^\n]*/g, "");
 const legacySchema = (
   await readFile("migrations/0001_atendimento.sql", "utf8")
@@ -734,6 +736,126 @@ test("banco legado (apenas 0001) migra índice de telefone por equipe automatica
   assert.equal(saveRes.status, 200);
   assert.equal(saveRes.data.agents.length, 2);
 });
+
+test("equipe espelhada de trás pra frente (general_reverse) acompanha adições, edições e pausas do Site Principal automaticamente", async (t) => {
+  const s = await setup(t);
+
+  const init = await s.admin("save", "POST", {
+    batchSize: 1,
+    teams: [
+      { id: "temp-e3", name: "Equipe 3", slug: "equipe3", batch_size: 1, active: true, sync_mode: "general_reverse" },
+    ],
+    agents: [
+      { id: "temp-a", name: "Ana", phone: "11911110001", position: 1, active: true, team_id: null },
+      { id: "temp-b", name: "Bia", phone: "11911110002", position: 2, active: true, team_id: null },
+      { id: "temp-c", name: "Carlos", phone: "11911110003", position: 3, active: true, team_id: null },
+    ],
+  });
+  assert.equal(init.status, 200);
+
+  // /api/team?slug=equipe3 já enxerga os 3 atendentes do Site Principal
+  const info3 = await s.call("team?slug=equipe3");
+  assert.equal(info3.status, 200);
+  assert.equal(info3.data.online, true);
+  assert.equal(info3.data.agentCount, 3);
+  assert.equal(info3.data.syncMode, "general_reverse");
+
+  const routeScope = async (teamSlug, handoffId = crypto.randomUUID()) => {
+    const c = await s.visitor();
+    return {
+      cookie: c,
+      handoffId,
+      res: await s.call("route", {
+        method: "POST",
+        cookie: c,
+        body: { analytics: true, handoffId, ...(teamSlug ? { team: teamSlug } : {}) },
+      }),
+    };
+  };
+
+  // Site Principal vai na ordem normal: Ana -> Bia -> Carlos
+  assert.equal((await routeScope(null)).res.data.name, "Ana");
+  assert.equal((await routeScope(null)).res.data.name, "Bia");
+
+  // Equipe 3 vai de trás pra frente: Carlos -> Bia -> Ana -> Carlos
+  const firstE3 = await routeScope("equipe3");
+  assert.equal(firstE3.res.data.name, "Carlos");
+  assert.equal(firstE3.res.data.trackContact, true);
+
+  // Retentativa / reload com mesmo handoffId mantém Carlos e não avança cursor nem dispara novo Lead
+  const retryE3 = await s.call("route", {
+    method: "POST",
+    cookie: firstE3.cookie,
+    body: { analytics: true, handoffId: firstE3.handoffId, team: "equipe3" },
+  });
+  assert.equal(retryE3.status, 200);
+  assert.equal(retryE3.data.name, "Carlos");
+  assert.equal(retryE3.data.trackContact, false);
+
+  assert.equal((await routeScope("equipe3")).res.data.name, "Bia");
+  assert.equal((await routeScope("equipe3")).res.data.name, "Ana");
+  assert.equal((await routeScope("equipe3")).res.data.name, "Carlos");
+
+  // Entra um novo número ("Daniel") apenas no Site Principal -> entra automaticamente como 1º em Equipe 3!
+  const addDaniel = await s.admin("save", "POST", {
+    batchSize: 1,
+    teams: init.data.teams,
+    agents: [
+      ...init.data.agents,
+      { id: "temp-d", name: "Daniel", phone: "11911110004", position: 4, active: true, team_id: null },
+    ],
+  });
+  assert.equal(addDaniel.status, 200);
+  assert.equal((await s.call("team?slug=equipe3")).data.agentCount, 4);
+  assert.equal((await routeScope("equipe3")).res.data.name, "Daniel");
+
+  // Pausar "Carlos" no Site Principal -> pausa automaticamente em Equipe 3 também (pula Carlos -> Bia)!
+  const danielPausado = addDaniel.data.agents.map((a) =>
+    a.name === "Carlos" ? { ...a, active: false } : a,
+  );
+  const pauseRes = await s.admin("save", "POST", {
+    batchSize: 1,
+    teams: addDaniel.data.teams,
+    agents: danielPausado,
+  });
+  assert.equal(pauseRes.status, 200);
+  assert.equal((await s.call("team?slug=equipe3")).data.agentCount, 3);
+  assert.equal((await routeScope("equipe3")).res.data.name, "Daniel");
+  assert.equal((await routeScope("equipe3")).res.data.name, "Bia");
+  assert.equal((await routeScope("equipe3")).res.data.name, "Ana");
+});
+
+test("banco existente (0001+0002+0003) com equipe3 já criada migra automaticamente para general_reverse via ensureSchema", async (t) => {
+  const preSyncSchema = (
+    (await readFile("migrations/0001_atendimento.sql", "utf8")) +
+    "\n" +
+    (await readFile("migrations/0002_equipes.sql", "utf8")) +
+    "\n" +
+    (await readFile("migrations/0003_multi_equipe_phone.sql", "utf8")) +
+    "\n" +
+    "INSERT INTO agents(id,name,phone,position,active,deleted,team_id) VALUES('pre-a1','Primero','5511988880001',1,1,0,NULL);\n" +
+    "INSERT INTO agents(id,name,phone,position,active,deleted,team_id) VALUES('pre-a2','Ultimo','5511988880002',2,1,0,NULL);\n" +
+    "INSERT INTO teams(id,slug,name,batch_size,active,deleted,created_at) VALUES('pre-t3','equipe3','Equipe 3',1,1,0,1002);\n"
+  ).replace(/--[^\n]*/g, "");
+  const s = await setup(t, preSyncSchema);
+
+  // Primeira chamada em /api/team?slug=equipe3 dispara ensureSchema e configura equipe3 como general_reverse
+  const teamInfo = await s.call("team?slug=equipe3");
+  assert.equal(teamInfo.status, 200);
+  assert.equal(teamInfo.data.online, true);
+  assert.equal(teamInfo.data.agentCount, 2);
+  assert.equal(teamInfo.data.syncMode, "general_reverse");
+
+  const c = await s.visitor();
+  const r = await s.call("route", {
+    method: "POST",
+    cookie: c,
+    body: { analytics: true, handoffId: crypto.randomUUID(), team: "equipe3" },
+  });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.name, "Ultimo");
+});
+
 
 
 

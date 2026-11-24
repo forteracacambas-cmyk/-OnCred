@@ -49,9 +49,26 @@ export function normalizeTeamSlug(input) {
   return s;
 }
 
+const VALID_SYNC_MODES = new Set([
+  "independent",
+  "general_same",
+  "general_reverse",
+]);
+function normalizeSyncMode(v) {
+  return VALID_SYNC_MODES.has(v) ? v : "independent";
+}
+
 const ROUTE_AVAILABLE_TRIGGER_SQL = `CREATE TRIGGER route_available BEFORE INSERT ON route_requests
 WHEN (NEW.team_id IS NULL AND NOT EXISTS(SELECT 1 FROM agents WHERE active=1 AND deleted=0 AND team_id IS NULL))
-  OR (NEW.team_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM agents WHERE active=1 AND deleted=0 AND team_id=NEW.team_id))
+  OR (NEW.team_id IS NOT NULL AND COALESCE(
+    (SELECT CASE
+      WHEN sync_mode IN ('general_same','general_reverse') THEN
+        NOT EXISTS(SELECT 1 FROM agents WHERE active=1 AND deleted=0 AND team_id IS NULL)
+      ELSE
+        NOT EXISTS(SELECT 1 FROM agents WHERE active=1 AND deleted=0 AND team_id=NEW.team_id)
+    END FROM teams WHERE id=NEW.team_id),
+    1
+  ))
 BEGIN SELECT RAISE(ABORT,'NO_AGENTS'); END`;
 
 const ROUTE_ASSIGN_TRIGGER_SQL = `CREATE TRIGGER route_assign AFTER INSERT ON route_requests
@@ -79,22 +96,55 @@ BEGIN
 
  UPDATE teams SET
   cursor_agent=CASE
-   WHEN used<batch_size AND EXISTS(SELECT 1 FROM agents WHERE id=cursor_agent AND active=1 AND deleted=0 AND team_id=NEW.team_id)
-   THEN cursor_agent
-   ELSE COALESCE(
-    (SELECT a.id FROM agents a WHERE a.active=1 AND a.deleted=0 AND a.team_id=NEW.team_id AND
-     (a.position>COALESCE((SELECT position FROM agents WHERE id=cursor_agent AND team_id=NEW.team_id),-1)
-      OR (a.position=(SELECT position FROM agents WHERE id=cursor_agent AND team_id=NEW.team_id) AND a.id>cursor_agent))
-     ORDER BY a.position,a.id LIMIT 1),
-    (SELECT id FROM agents WHERE active=1 AND deleted=0 AND team_id=NEW.team_id ORDER BY position,id LIMIT 1))
+   WHEN sync_mode IN ('general_same','general_reverse') THEN
+    CASE
+     WHEN used<batch_size AND EXISTS(SELECT 1 FROM agents WHERE id=cursor_agent AND active=1 AND deleted=0 AND team_id IS NULL)
+     THEN cursor_agent
+     WHEN sync_mode='general_reverse' THEN
+      COALESCE(
+       (SELECT a.id FROM agents a WHERE a.active=1 AND a.deleted=0 AND a.team_id IS NULL AND (
+         (SELECT position FROM agents WHERE id=cursor_agent AND team_id IS NULL) IS NULL
+         OR a.position<(SELECT position FROM agents WHERE id=cursor_agent AND team_id IS NULL)
+         OR (a.position=(SELECT position FROM agents WHERE id=cursor_agent AND team_id IS NULL) AND a.id<cursor_agent)
+       ) ORDER BY a.position DESC,a.id DESC LIMIT 1),
+       (SELECT id FROM agents WHERE active=1 AND deleted=0 AND team_id IS NULL ORDER BY position DESC,id DESC LIMIT 1))
+     ELSE
+      COALESCE(
+       (SELECT a.id FROM agents a WHERE a.active=1 AND a.deleted=0 AND a.team_id IS NULL AND
+        (a.position>COALESCE((SELECT position FROM agents WHERE id=cursor_agent AND team_id IS NULL),-1)
+         OR (a.position=(SELECT position FROM agents WHERE id=cursor_agent AND team_id IS NULL) AND a.id>cursor_agent))
+        ORDER BY a.position,a.id LIMIT 1),
+       (SELECT id FROM agents WHERE active=1 AND deleted=0 AND team_id IS NULL ORDER BY position,id LIMIT 1))
+    END
+   ELSE
+    CASE
+     WHEN used<batch_size AND EXISTS(SELECT 1 FROM agents WHERE id=cursor_agent AND active=1 AND deleted=0 AND team_id=NEW.team_id)
+     THEN cursor_agent
+     ELSE COALESCE(
+      (SELECT a.id FROM agents a WHERE a.active=1 AND a.deleted=0 AND a.team_id=NEW.team_id AND
+       (a.position>COALESCE((SELECT position FROM agents WHERE id=cursor_agent AND team_id=NEW.team_id),-1)
+        OR (a.position=(SELECT position FROM agents WHERE id=cursor_agent AND team_id=NEW.team_id) AND a.id>cursor_agent))
+       ORDER BY a.position,a.id LIMIT 1),
+      (SELECT id FROM agents WHERE active=1 AND deleted=0 AND team_id=NEW.team_id ORDER BY position,id LIMIT 1))
+    END
   END,
   used=CASE
-   WHEN used<batch_size AND EXISTS(SELECT 1 FROM agents WHERE id=cursor_agent AND active=1 AND deleted=0 AND team_id=NEW.team_id)
-   THEN used ELSE 0
+   WHEN sync_mode IN ('general_same','general_reverse') AND used<batch_size AND EXISTS(SELECT 1 FROM agents WHERE id=cursor_agent AND active=1 AND deleted=0 AND team_id IS NULL)
+   THEN used
+   WHEN sync_mode='independent' AND used<batch_size AND EXISTS(SELECT 1 FROM agents WHERE id=cursor_agent AND active=1 AND deleted=0 AND team_id=NEW.team_id)
+   THEN used
+   ELSE 0
   END
  WHERE id=NEW.team_id
   AND NEW.team_id IS NOT NULL
-  AND NOT EXISTS(SELECT 1 FROM visitors v JOIN agents a ON a.id=v.agent_id WHERE v.id=NEW.visitor_id AND a.active=1 AND a.deleted=0 AND a.team_id=NEW.team_id);
+  AND NOT EXISTS(
+   SELECT 1 FROM visitors v JOIN agents a ON a.id=v.agent_id
+   WHERE v.id=NEW.visitor_id AND a.active=1 AND a.deleted=0
+    AND CASE
+     WHEN (SELECT t.sync_mode FROM teams t WHERE t.id=NEW.team_id) IN ('general_same','general_reverse') THEN a.team_id IS NULL
+     ELSE a.team_id=NEW.team_id
+    END
+  );
 
  UPDATE visitors SET
   agent_id=CASE
@@ -103,7 +153,17 @@ BEGIN
   END,
   route_token=NEW.id
  WHERE id=NEW.visitor_id
-  AND NOT EXISTS(SELECT 1 FROM agents WHERE id=visitors.agent_id AND active=1 AND deleted=0 AND COALESCE(team_id,'')=COALESCE(NEW.team_id,''));
+  AND NOT EXISTS(
+   SELECT 1 FROM agents a
+   WHERE a.id=visitors.agent_id AND a.active=1 AND a.deleted=0
+    AND (
+     (NEW.team_id IS NULL AND a.team_id IS NULL)
+     OR (NEW.team_id IS NOT NULL AND CASE
+      WHEN (SELECT sync_mode FROM teams WHERE id=NEW.team_id) IN ('general_same','general_reverse') THEN a.team_id IS NULL
+      ELSE a.team_id=NEW.team_id
+     END)
+    )
+  );
 
  INSERT INTO deliveries(id,visitor_id,agent_id,created_at,first_delivery)
  SELECT NEW.id,id,agent_id,NEW.at,NOT EXISTS(SELECT 1 FROM deliveries WHERE visitor_id=NEW.visitor_id)
@@ -122,6 +182,7 @@ async function ensureSchema(db) {
   let hasTeams = false;
   let hasAgentTeamCol = false;
   let hasReqTeamCol = false;
+  let hasSyncModeCol = false;
   let triggersReady = false;
   let phoneIdxReady = false;
 
@@ -133,6 +194,11 @@ async function ensureSchema(db) {
       .first());
 
     if (hasTeams) {
+      const teamCols = await db.prepare("PRAGMA table_info(teams)").all();
+      hasSyncModeCol = (teamCols.results || []).some(
+        (c) => c.name === "sync_mode",
+      );
+
       const agentCols = await db.prepare("PRAGMA table_info(agents)").all();
       hasAgentTeamCol = (agentCols.results || []).some(
         (c) => c.name === "team_id",
@@ -151,7 +217,11 @@ async function ensureSchema(db) {
       const rows = tr.results || [];
       triggersReady =
         rows.length === 2 &&
-        rows.every((r) => String(r.sql || "").includes("team_id"));
+        rows.every(
+          (r) =>
+            String(r.sql || "").includes("team_id") &&
+            String(r.sql || "").includes("sync_mode"),
+        );
 
       const phoneIdx = await db
         .prepare(
@@ -167,6 +237,7 @@ async function ensureSchema(db) {
 
   if (
     hasTeams &&
+    hasSyncModeCol &&
     hasAgentTeamCol &&
     hasReqTeamCol &&
     triggersReady &&
@@ -186,10 +257,24 @@ async function ensureSchema(db) {
           used INTEGER NOT NULL DEFAULT 0,
           active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
           deleted INTEGER NOT NULL DEFAULT 0 CHECK(deleted IN (0,1)),
+          sync_mode TEXT NOT NULL DEFAULT 'independent' CHECK(sync_mode IN ('independent','general_same','general_reverse')),
           created_at INTEGER NOT NULL DEFAULT 0
         )`,
       )
       .run();
+  } else if (!hasSyncModeCol) {
+    try {
+      await db
+        .prepare(
+          "ALTER TABLE teams ADD COLUMN sync_mode TEXT NOT NULL DEFAULT 'independent' CHECK(sync_mode IN ('independent','general_same','general_reverse'))",
+        )
+        .run();
+      await db
+        .prepare(
+          "UPDATE teams SET sync_mode='general_reverse', cursor_agent=NULL, used=0 WHERE lower(slug)='equipe3' AND deleted=0",
+        )
+        .run();
+    } catch {}
   }
 
   await db
@@ -329,7 +414,7 @@ async function handle({ request, env, params }) {
     const slug = String(url.searchParams.get("slug") || "").trim();
     if (!slug) fail("Equipe não informada.", 400);
     const team = await sql(
-      `SELECT id, slug, name, active, deleted FROM teams
+      `SELECT id, slug, name, active, deleted, sync_mode FROM teams
        WHERE (id=? OR lower(slug)=lower(?))
        ORDER BY deleted ASC, (CASE WHEN active=1 THEN 0 ELSE 1 END) LIMIT 1`,
       slug,
@@ -341,10 +426,17 @@ async function handle({ request, env, params }) {
         404,
       );
     }
-    const countRow = await sql(
-      "SELECT COUNT(*) AS count FROM agents WHERE active=1 AND deleted=0 AND team_id=?",
-      team.id,
-    ).first();
+    const syncMode = normalizeSyncMode(team.sync_mode);
+    const isMirrored =
+      syncMode === "general_same" || syncMode === "general_reverse";
+    const countRow = isMirrored
+      ? await sql(
+          "SELECT COUNT(*) AS count FROM agents WHERE active=1 AND deleted=0 AND team_id IS NULL",
+        ).first()
+      : await sql(
+          "SELECT COUNT(*) AS count FROM agents WHERE active=1 AND deleted=0 AND team_id=?",
+          team.id,
+        ).first();
     const agentCount = Number(countRow?.count || 0);
     const active = team.active === 1;
     return json({
@@ -353,6 +445,7 @@ async function handle({ request, env, params }) {
       online: active && agentCount > 0,
       slug: team.slug,
       name: team.name,
+      syncMode,
       agentCount,
     });
   }
@@ -575,7 +668,7 @@ async function handle({ request, env, params }) {
         sql("SELECT batch_size FROM settings WHERE id=1"),
         sql("SELECT * FROM agents WHERE deleted=0 ORDER BY position,id"),
         sql(
-          "SELECT id,slug,name,batch_size,active,created_at FROM teams WHERE deleted=0 ORDER BY created_at,lower(name)",
+          "SELECT id,slug,name,batch_size,active,sync_mode,created_at FROM teams WHERE deleted=0 ORDER BY created_at,lower(name)",
         ),
       ]);
       return json({
@@ -607,13 +700,14 @@ async function handle({ request, env, params }) {
         fail("Dados de salvamento inválidos.");
 
       const existingRes = await db.batch([
-        sql("SELECT id FROM teams WHERE deleted=0"),
+        sql("SELECT id, sync_mode FROM teams WHERE deleted=0"),
         sql("SELECT id, position, team_id, active FROM agents WHERE deleted=0 ORDER BY position, id"),
         sql("SELECT COALESCE(MAX(position),0) AS max_pos FROM agents"),
       ]);
-      const existingTeamIds = new Set(
-        (existingRes[0].results || []).map((r) => r.id),
+      const existingTeamMap = new Map(
+        (existingRes[0].results || []).map((r) => [r.id, r]),
       );
+      const existingTeamIds = new Set(existingTeamMap.keys());
       const existingAgentMap = new Map(
         (existingRes[1].results || []).map((r) => [r.id, r]),
       );
@@ -657,6 +751,8 @@ async function handle({ request, env, params }) {
         if (rawId) teamIdMap.set(rawId, resolvedId);
         teamIdMap.set(resolvedId, resolvedId);
 
+        const syncMode = normalizeSyncMode(rawTeam.sync_mode);
+
         normalizedTeams.push({
           id: resolvedId,
           isExisting,
@@ -664,6 +760,7 @@ async function handle({ request, env, params }) {
           name: tName,
           batch_size: tBatch,
           active: rawTeam.active === false || rawTeam.active === 0 ? 0 : 1,
+          sync_mode: syncMode,
         });
       }
 
@@ -759,40 +856,49 @@ async function handle({ request, env, params }) {
         }
       }
 
-      // 3. Upsert teams (resetting cursor when that team's active order changed)
+      // 3. Upsert teams (resetting cursor when order or sync_mode changed)
       const now = Date.now();
       for (const t of normalizedTeams) {
         if (t.isExisting) {
+          const prevSync = normalizeSyncMode(existingTeamMap.get(t.id)?.sync_mode);
+          const isMirrored =
+            t.sync_mode === "general_same" || t.sync_mode === "general_reverse";
           const teamOrderChanged =
-            (beforeScopeOrder.get(t.id) || "") !== (afterScopeOrder.get(t.id) || "");
+            prevSync !== t.sync_mode ||
+            (isMirrored
+              ? generalOrderChanged
+              : (beforeScopeOrder.get(t.id) || "") !== (afterScopeOrder.get(t.id) || ""));
           stmts.push(
             teamOrderChanged
               ? sql(
-                  "UPDATE teams SET name=?,slug=?,batch_size=?,active=?,cursor_agent=NULL,used=0 WHERE id=? AND deleted=0",
+                  "UPDATE teams SET name=?,slug=?,batch_size=?,active=?,sync_mode=?,cursor_agent=NULL,used=0 WHERE id=? AND deleted=0",
                   t.name,
                   t.slug,
                   t.batch_size,
                   t.active,
+                  t.sync_mode,
                   t.id,
                 )
               : sql(
-                  "UPDATE teams SET name=?,slug=?,batch_size=?,active=? WHERE id=? AND deleted=0",
+                  "UPDATE teams SET name=?,slug=?,batch_size=?,active=?,sync_mode=? WHERE id=? AND deleted=0",
                   t.name,
                   t.slug,
                   t.batch_size,
                   t.active,
+                  t.sync_mode,
                   t.id,
                 ),
           );
         } else {
           stmts.push(
             sql(
-              "INSERT INTO teams(id,slug,name,batch_size,active,deleted,created_at) VALUES(?,?,?,?,?,0,?)",
+              "INSERT INTO teams(id,slug,name,batch_size,active,sync_mode,deleted,created_at) VALUES(?,?,?,?,?,?,0,?)",
               t.id,
               t.slug,
               t.name,
               t.batch_size,
               t.active,
+              t.sync_mode,
               now,
             ),
           );
@@ -843,7 +949,7 @@ async function handle({ request, env, params }) {
         sql("SELECT batch_size FROM settings WHERE id=1"),
         sql("SELECT * FROM agents WHERE deleted=0 ORDER BY position,id"),
         sql(
-          "SELECT id,slug,name,batch_size,active,created_at FROM teams WHERE deleted=0 ORDER BY created_at,lower(name)",
+          "SELECT id,slug,name,batch_size,active,sync_mode,created_at FROM teams WHERE deleted=0 ORDER BY created_at,lower(name)",
         ),
       ]);
 
@@ -864,6 +970,7 @@ async function handle({ request, env, params }) {
         data.batchSize === undefined ? 1 : Number(data.batchSize);
       if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 1000)
         fail("O lote da equipe deve ser de 1 a 1000.");
+      const syncMode = normalizeSyncMode(data.syncMode || data.sync_mode);
       const existing = await sql(
         "SELECT 1 FROM teams WHERE lower(slug)=lower(?) AND deleted=0",
         slug,
@@ -871,16 +978,17 @@ async function handle({ request, env, params }) {
       if (existing) fail("Já existe uma equipe com essa URL.", 409);
       const teamId = uuid();
       await sql(
-        "INSERT INTO teams(id,slug,name,batch_size,active,deleted,created_at) VALUES(?,?,?,?,1,0,?)",
+        "INSERT INTO teams(id,slug,name,batch_size,active,sync_mode,deleted,created_at) VALUES(?,?,?,?,1,?,0,?)",
         teamId,
         slug,
         teamName,
         batchSize,
+        syncMode,
         Date.now(),
       ).run();
       return json({
         ok: true,
-        team: { id: teamId, slug, name: teamName, batch_size: batchSize, active: 1 },
+        team: { id: teamId, slug, name: teamName, batch_size: batchSize, active: 1, sync_mode: syncMode },
       });
     }
     if (
@@ -906,6 +1014,7 @@ async function handle({ request, env, params }) {
       const teamName = String(data.name || "").trim();
       const slug = normalizeTeamSlug(data.slug || teamName);
       const batchSize = Number(data.batchSize);
+      const syncMode = normalizeSyncMode(data.syncMode || data.sync_mode);
       if (
         !teamName ||
         teamName.length > 80 ||
@@ -922,11 +1031,12 @@ async function handle({ request, env, params }) {
       ).first();
       if (conflict) fail("Já existe outra equipe com essa URL.", 409);
       await sql(
-        "UPDATE teams SET name=?,slug=?,batch_size=?,active=? WHERE id=? AND deleted=0",
+        "UPDATE teams SET name=?,slug=?,batch_size=?,active=?,sync_mode=? WHERE id=? AND deleted=0",
         teamName,
         slug,
         batchSize,
         data.active ? 1 : 0,
+        syncMode,
         id,
       ).run();
       return json({ ok: true });

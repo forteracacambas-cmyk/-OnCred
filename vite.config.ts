@@ -47,9 +47,12 @@ function normalizeDevPhone(input: any) {
 }
 
 function devApiPlugin() {
+  const VALID_SYNC_MODES = new Set(['independent', 'general_same', 'general_reverse']);
+  const normalizeSync = (v: any) => (VALID_SYNC_MODES.has(v) ? v : 'independent');
+
   const defaultState = () => ({
     devTeams: [
-      { id: "11111111-1111-1111-1111-111111111111", slug: "equipe1", name: "Equipe 1", batch_size: 1, active: 1, deleted: 0, cursor: 0 },
+      { id: "11111111-1111-1111-1111-111111111111", slug: "equipe1", name: "Equipe 1", batch_size: 1, active: 1, sync_mode: "independent", deleted: 0, cursor: 0 },
     ],
     devAgents: [
       { id: "22222222-2222-2222-2222-222222222201", name: "Atendente Comercial 1", phone: "551130420181", position: 1, active: 1, deleted: 0, team_id: null },
@@ -111,7 +114,11 @@ function devApiPlugin() {
             res.end(JSON.stringify({ exists: false, online: false, error: 'Equipe não encontrada.' }));
             return;
           }
-          const agentCount = state.devAgents.filter((a: any) => !a.deleted && a.active && a.team_id === team.id).length;
+          const syncMode = normalizeSync(team.sync_mode);
+          const isMirrored = syncMode === 'general_same' || syncMode === 'general_reverse';
+          const agentCount = isMirrored
+            ? state.devAgents.filter((a: any) => !a.deleted && a.active && !a.team_id).length
+            : state.devAgents.filter((a: any) => !a.deleted && a.active && a.team_id === team.id).length;
           const active = !!team.active;
           res.end(JSON.stringify({
             exists: true,
@@ -119,6 +126,7 @@ function devApiPlugin() {
             online: active && agentCount > 0,
             slug: team.slug,
             name: team.name,
+            syncMode,
             agentCount,
           }));
           return;
@@ -165,7 +173,21 @@ function devApiPlugin() {
               res.end(JSON.stringify({ error: "Equipe temporariamente indisponível." }));
               return;
             }
-            const pool = state.devAgents.filter((a: any) => !a.deleted && a.active && a.team_id === teamObj.id);
+            const syncMode = normalizeSync(teamObj.sync_mode);
+            let pool: any[] = [];
+            if (syncMode === 'general_reverse') {
+              pool = [...state.devAgents]
+                .filter((a: any) => !a.deleted && a.active && !a.team_id)
+                .sort((a: any, b: any) => (b.position - a.position) || String(b.id).localeCompare(String(a.id)));
+            } else if (syncMode === 'general_same') {
+              pool = [...state.devAgents]
+                .filter((a: any) => !a.deleted && a.active && !a.team_id)
+                .sort((a: any, b: any) => (a.position - b.position) || String(a.id).localeCompare(String(b.id)));
+            } else {
+              pool = [...state.devAgents]
+                .filter((a: any) => !a.deleted && a.active && a.team_id === teamObj.id)
+                .sort((a: any, b: any) => (a.position - b.position) || String(a.id).localeCompare(String(b.id)));
+            }
             if (!pool.length) {
               res.statusCode = 503;
               res.end(JSON.stringify({ error: `Nenhum atendente disponível na equipe ${teamObj.name} no momento.` }));
@@ -282,6 +304,7 @@ function devApiPlugin() {
               name: String(rawT.name || slug).trim(),
               batch_size: Number(rawT.batch_size) || 1,
               active: rawT.active === false || rawT.active === 0 ? 0 : 1,
+              sync_mode: normalizeSync(rawT.sync_mode),
               deleted: 0,
               cursor: existing?.cursor || 0,
             });
@@ -331,11 +354,17 @@ function devApiPlugin() {
 
           newAgents.sort((a, b) => (a.position - b.position) || String(a.id).localeCompare(String(b.id)));
           const afterOrder = buildDevOrder(newAgents);
-          if ((beforeOrder.get('__general__') || '') !== (afterOrder.get('__general__') || '')) {
+          const generalChanged = (beforeOrder.get('__general__') || '') !== (afterOrder.get('__general__') || '');
+          if (generalChanged) {
             state.generalCursor = 0;
           }
           for (const t of newTeams) {
-            if ((beforeOrder.get(t.id) || '') !== (afterOrder.get(t.id) || '')) {
+            const prevT = state.devTeams.find((x: any) => x.id === t.id);
+            const isMirrored = t.sync_mode === 'general_same' || t.sync_mode === 'general_reverse';
+            if (
+              normalizeSync(prevT?.sync_mode) !== t.sync_mode ||
+              (isMirrored ? generalChanged : (beforeOrder.get(t.id) || '') !== (afterOrder.get(t.id) || ''))
+            ) {
               t.cursor = 0;
             }
           }
@@ -372,6 +401,7 @@ function devApiPlugin() {
             name: String(data.name || slug).trim(),
             batch_size: Number(data.batchSize) || 1,
             active: 1,
+            sync_mode: normalizeSync(data.syncMode || data.sync_mode),
             deleted: 0,
             cursor: 0,
           };
@@ -419,6 +449,7 @@ function devApiPlugin() {
             team.slug = normalizeDevSlug(data.slug || team.slug) || team.slug;
             team.batch_size = Number(data.batchSize) || 1;
             team.active = data.active ? 1 : 0;
+            if (data.syncMode || data.sync_mode) team.sync_mode = normalizeSync(data.syncMode || data.sync_mode);
             persistState();
             res.end(JSON.stringify({ ok: true }));
             return;

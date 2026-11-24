@@ -12,12 +12,15 @@ type Agent = {
   team_id?: string | null;
 };
 
+type SyncMode = "independent" | "general_same" | "general_reverse";
+
 type Team = {
   id: string;
   slug: string;
   name: string;
   batch_size: number;
   active: number;
+  sync_mode?: SyncMode;
   created_at?: number;
 };
 
@@ -161,6 +164,7 @@ function serializeSnapshot(batchSize: number, teams: Team[], agents: Agent[]) {
       name: t.name,
       batch_size: Number(t.batch_size) || 1,
       active: t.active ? 1 : 0,
+      sync_mode: t.sync_mode || "independent",
     })),
     agents: agents.map((a) => ({
       id: a.id,
@@ -205,7 +209,8 @@ export default function AttendantPanel() {
     [teamName, setTeamName] = useState(""),
     [teamSlug, setTeamSlug] = useState(""),
     [teamSlugTouched, setTeamSlugTouched] = useState(false),
-    [teamBatch, setTeamBatch] = useState(1);
+    [teamBatch, setTeamBatch] = useState(1),
+    [teamSyncMode, setTeamSyncMode] = useState<SyncMode>("independent");
 
   // Drag-and-drop state
   const [draggingAgentId, setDraggingAgentId] = useState<string | null>(null),
@@ -264,7 +269,10 @@ export default function AttendantPanel() {
 
   const applyServerSnapshot = (config: { batchSize: number; agents: Agent[]; teams: Team[] }) => {
     const loadedAgents = sortAgentsByPosition(config.agents || []);
-    const loadedTeams = config.teams || [];
+    const loadedTeams = (config.teams || []).map((t) => ({
+      ...t,
+      sync_mode: (t.sync_mode || "independent") as SyncMode,
+    }));
     const loadedBatch = Number(config.batchSize) || 1;
     setSavedSnapshot({
       batchSize: loadedBatch,
@@ -386,6 +394,7 @@ export default function AttendantPanel() {
     setTeamSlug("");
     setTeamSlugTouched(false);
     setTeamBatch(1);
+    setTeamSyncMode("independent");
   };
 
   // --- Ações em Rascunho (exigem clicar em "Salvar alterações" para ir online) ---
@@ -465,11 +474,31 @@ export default function AttendantPanel() {
         throw new Error(`Já existe uma equipe usando a URL /${slugToUse}.`);
       }
 
+      const migrateTeamAgentsToGeneral = (tid: string) => {
+        setAgents((prev) => {
+          const generalPhones = new Set(prev.filter((a) => !a.team_id).map((a) => a.phone));
+          const result: Agent[] = [];
+          for (const a of prev) {
+            if (a.team_id !== tid) {
+              result.push(a);
+              continue;
+            }
+            if (generalPhones.has(a.phone)) continue;
+            generalPhones.add(a.phone);
+            result.push({ ...a, team_id: null });
+          }
+          return sortAgentsByPosition(result);
+        });
+      };
+
       if (editingTeam) {
+        if (teamSyncMode !== "independent") {
+          migrateTeamAgentsToGeneral(editingTeam.id);
+        }
         setTeams((prev) =>
           prev.map((t) =>
             t.id === editingTeam.id
-              ? { ...t, name: cleanName, slug: slugToUse, batch_size: cleanBatch }
+              ? { ...t, name: cleanName, slug: slugToUse, batch_size: cleanBatch, sync_mode: teamSyncMode }
               : t,
           ),
         );
@@ -484,11 +513,14 @@ export default function AttendantPanel() {
             slug: slugToUse,
             batch_size: cleanBatch,
             active: 1,
+            sync_mode: teamSyncMode,
             created_at: Date.now(),
           },
         ]);
         setNotice(
-          `Equipe "${cleanName}" criada (/${slugToUse})! Arraste pelo menos 1 número para ela e clique em "Salvar alterações" para ficar online.`,
+          teamSyncMode === "independent"
+            ? `Equipe "${cleanName}" criada (/${slugToUse})! Arraste pelo menos 1 número para ela e clique em "Salvar alterações" para ficar online.`
+            : `Equipe "${cleanName}" criada (/${slugToUse}) espelhando o Site Principal! Clique em "Salvar alterações" para ficar online.`,
         );
       }
       resetTeamForm();
@@ -506,6 +538,16 @@ export default function AttendantPanel() {
     if (targetAgentId === agentId) return;
     const moving = agents.find((a) => a.id === agentId);
     if (!moving) return;
+
+    if (targetTeamId) {
+      const destTeam = teams.find((t) => t.id === targetTeamId);
+      if (destTeam && (destTeam.sync_mode === "general_same" || destTeam.sync_mode === "general_reverse")) {
+        setError(
+          `A equipe "${destTeam.name}" espelha o Site Principal automaticamente — arraste, pause ou adicione no Site Principal e ela acompanha.`,
+        );
+        return;
+      }
+    }
 
     const sourceTeamId = moving.team_id || null;
     const isSameColumn = sourceTeamId === targetTeamId;
@@ -671,12 +713,13 @@ export default function AttendantPanel() {
     );
   };
 
-  const duplicateColumnAsTeam = (sourceTeamId: string | null) => {
+  const duplicateColumnAsTeam = (sourceTeamId: string | null, syncMode: SyncMode = "independent") => {
     const sourceTeam = sourceTeamId ? teams.find((t) => t.id === sourceTeamId) || null : null;
     const { name: nextName, slug: nextSlug } = suggestDuplicateTeamInfo(sourceTeam, teams);
-    const sourceAgents = sortAgentsByPosition(
-      agents.filter((a) => (a.team_id || null) === sourceTeamId),
-    );
+    const isMirrored = syncMode === "general_same" || syncMode === "general_reverse";
+    const sourceAgents = isMirrored
+      ? []
+      : sortAgentsByPosition(agents.filter((a) => (a.team_id || null) === sourceTeamId));
     const newTeamId = "temp-team-" + crypto.randomUUID();
     const newTeam: Team = {
       id: newTeamId,
@@ -684,6 +727,7 @@ export default function AttendantPanel() {
       slug: nextSlug,
       batch_size: sourceTeam ? sourceTeam.batch_size : Math.max(1, Math.min(1000, Math.round(Number(batch) || 1))),
       active: 1,
+      sync_mode: syncMode,
       created_at: Date.now(),
     };
     let nextPos = agents.reduce((m, a) => Math.max(m, a.position || 0), 0);
@@ -703,7 +747,9 @@ export default function AttendantPanel() {
       setAgents((prev) => sortAgentsByPosition([...prev, ...clonedAgents]));
     }
     setNotice(
-      `Link "${newTeam.name}" (/${newTeam.slug}) duplicado com ${clonedAgents.length} número(s)! Organize a ordem com arrastar ou ↑ ↓, ajuste a URL em "Editar" se quiser e clique em "Salvar alterações".`,
+      isMirrored
+        ? `Link espelhado "${newTeam.name}" (/${newTeam.slug}) criado! Tudo que entrar, sair ou pausar no Site Principal acompanha automaticamente aqui${syncMode === "general_reverse" ? " de trás pra frente" : ""}. Clique em "Salvar alterações" para publicar.`
+        : `Link "${newTeam.name}" (/${newTeam.slug}) duplicado com ${clonedAgents.length} número(s)! Organize a ordem com arrastar ou ↑ ↓, ajuste a URL em "Editar" se quiser e clique em "Salvar alterações".`,
     );
   };
 
@@ -778,6 +824,36 @@ export default function AttendantPanel() {
     );
   };
 
+  const updateTeamSyncModeStage = (teamId: string, nextMode: SyncMode) => {
+    const target = teams.find((t) => t.id === teamId);
+    if (!target || (target.sync_mode || "independent") === nextMode) return;
+    setError("");
+    if (nextMode !== "independent") {
+      setAgents((prev) => {
+        const generalPhones = new Set(prev.filter((a) => !a.team_id).map((a) => a.phone));
+        const result: Agent[] = [];
+        for (const a of prev) {
+          if (a.team_id !== teamId) {
+            result.push(a);
+            continue;
+          }
+          if (generalPhones.has(a.phone)) continue;
+          generalPhones.add(a.phone);
+          result.push({ ...a, team_id: null });
+        }
+        return sortAgentsByPosition(result);
+      });
+    }
+    setTeams((prev) =>
+      prev.map((t) => (t.id === teamId ? { ...t, sync_mode: nextMode } : t)),
+    );
+    setNotice(
+      nextMode === "independent"
+        ? `Equipe "${target.name}" mudou para lista própria. Arraste números para ela e clique em "Salvar alterações".`
+        : `Equipe "${target.name}" agora espelha o Site Principal (${nextMode === "general_reverse" ? "de trás pra frente" : "mesma ordem"})! Novos números e pausas no Site Principal serão refletidos automaticamente. Clique em "Salvar alterações" para aplicar online.`,
+    );
+  };
+
   const discardChanges = () => {
     setError("");
     setBatch(savedSnapshot.batchSize);
@@ -799,6 +875,7 @@ export default function AttendantPanel() {
           slug: t.slug,
           batch_size: Math.max(1, Math.min(1000, Math.round(Number(t.batch_size) || 1))),
           active: !!t.active,
+          sync_mode: t.sync_mode || "independent",
         })),
         agents: agents.map((a) => ({
           id: a.id,
@@ -818,14 +895,17 @@ export default function AttendantPanel() {
       setStats(totals);
       await verifyTeamsOnServer(saved.teams || []);
 
-      const emptyTeams = (saved.teams || []).filter(
-        (t: Team) =>
-          t.active &&
-          !(saved.agents || []).some((a: Agent) => a.active && a.team_id === t.id),
-      );
+      const hasGeneralActive = (saved.agents || []).some((a: Agent) => a.active && !a.team_id);
+      const emptyTeams = (saved.teams || []).filter((t: Team) => {
+        if (!t.active) return false;
+        const isMirrored = t.sync_mode === "general_same" || t.sync_mode === "general_reverse";
+        return isMirrored
+          ? !hasGeneralActive
+          : !(saved.agents || []).some((a: Agent) => a.active && a.team_id === t.id);
+      });
       if (emptyTeams.length > 0) {
         setNotice(
-          `Alterações salvas e publicadas online! Atenção: a equipe "${emptyTeams.map((t: Team) => t.name).join('", "')}" ainda está sem atendentes ativos — arraste pelo menos 1 número para ela e salve novamente.`,
+          `Alterações salvas e publicadas online! Atenção: a equipe "${emptyTeams.map((t: Team) => t.name).join('", "')}" ainda está sem atendentes ativos — adicione ou ative pelo menos 1 número e salve novamente.`,
         );
       } else {
         setNotice("Todas as alterações foram salvas e confirmadas ONLINE no servidor!");
@@ -967,6 +1047,7 @@ export default function AttendantPanel() {
       ...teams
         .filter(
           (t) =>
+            (!t.sync_mode || t.sync_mode === "independent") &&
             t.id !== (a.team_id || null) &&
             !agents.some((x) => x.team_id === t.id && x.phone === a.phone),
         )
@@ -1061,11 +1142,13 @@ export default function AttendantPanel() {
             onChange={(e) => moveAgentToTeam(a.id, e.target.value || null)}
           >
             <option value="">Site Principal (/)</option>
-            {teams.map((t) => (
-              <option key={t.id} value={t.id}>
-                Equipe: {t.name} (/{t.slug})
-              </option>
-            ))}
+            {teams
+              .filter((t) => !t.sync_mode || t.sync_mode === "independent" || t.id === a.team_id)
+              .map((t) => (
+                <option key={t.id} value={t.id}>
+                  Equipe: {t.name} (/{t.slug})
+                </option>
+              ))}
           </select>
           {copyTargets.length > 0 && (
             <select
@@ -1360,7 +1443,7 @@ export default function AttendantPanel() {
                     maxLength={49}
                   />
                 </label>
-                <label style={{ maxWidth: "150px" }}>
+                <label style={{ maxWidth: "140px" }}>
                   Cliques por atendente
                   <input
                     type="number"
@@ -1369,6 +1452,17 @@ export default function AttendantPanel() {
                     value={teamBatch}
                     onChange={(e) => setTeamBatch(Number(e.target.value))}
                   />
+                </label>
+                <label>
+                  Origem dos números
+                  <select
+                    value={teamSyncMode}
+                    onChange={(e) => setTeamSyncMode(e.target.value as SyncMode)}
+                  >
+                    <option value="independent">Lista própria (manual)</option>
+                    <option value="general_reverse">Espelhar Site Principal (de trás pra frente)</option>
+                    <option value="general_same">Espelhar Site Principal (mesma ordem)</option>
+                  </select>
                 </label>
                 <button className="primary">
                   {editingTeam ? "Atualizar equipe" : "Criar equipe"}
@@ -1441,10 +1535,18 @@ export default function AttendantPanel() {
                         <button
                           type="button"
                           className="duplicate-team-btn"
-                          onClick={() => duplicateColumnAsTeam(null)}
-                          title="Cria uma nova URL de equipe com cópias destes mesmos números para ordenar como quiser"
+                          onClick={() => duplicateColumnAsTeam(null, "independent")}
+                          title="Cria uma nova URL de equipe com cópias independentes destes números"
                         >
                           Duplicar link
+                        </button>
+                        <button
+                          type="button"
+                          className="mirror-team-btn"
+                          onClick={() => duplicateColumnAsTeam(null, "general_reverse")}
+                          title="Cria uma equipe espelhada de trás pra frente que acompanha automaticamente novos números e pausas do Site Principal"
+                        >
+                          Espelhar invertido
                         </button>
                       </div>
                     </div>
@@ -1463,16 +1565,32 @@ export default function AttendantPanel() {
 
                 {/* Colunas Dinâmicas: Equipes Criadas */}
                 {teams.map((t) => {
-                  const teamAgents = sortedAgents.filter((a) => a.team_id === t.id);
-                  const teamActiveCount = teamAgents.filter((a) => a.active).length;
+                  const syncMode: SyncMode = t.sync_mode || "independent";
+                  const isMirrored = syncMode === "general_same" || syncMode === "general_reverse";
+                  const rawTeamAgents = sortedAgents.filter((a) => a.team_id === t.id);
+                  const displayAgents =
+                    syncMode === "general_reverse"
+                      ? [...generalAgents].reverse()
+                      : syncMode === "general_same"
+                      ? generalAgents
+                      : rawTeamAgents;
+                  const teamActiveCount = isMirrored
+                    ? generalActiveCount
+                    : rawTeamAgents.filter((a) => a.active).length;
+
                   const savedT = savedTeamMap.get(t.id);
                   const isTeamSavedOnServer = !!savedT && savedT.slug === t.slug;
+                  const prevSyncMode: SyncMode = savedT?.sync_mode || "independent";
                   const prevTeamKey = sortAgentsByPosition(
-                    savedSnapshot.agents.filter((sa) => sa.team_id === t.id),
+                    savedSnapshot.agents.filter((sa) =>
+                      prevSyncMode === "independent" ? sa.team_id === t.id : !sa.team_id,
+                    ),
                   )
                     .map((sa) => `${sa.id}:${sa.active}:${sa.position}`)
                     .join("|");
-                  const currTeamKey = teamAgents
+                  const currTeamKey = sortAgentsByPosition(
+                    isMirrored ? generalAgents : rawTeamAgents,
+                  )
                     .map((a) => `${a.id}:${a.active}:${a.position}`)
                     .join("|");
                   const isTeamUnsaved =
@@ -1481,6 +1599,7 @@ export default function AttendantPanel() {
                     savedT.name !== t.name ||
                     savedT.batch_size !== t.batch_size ||
                     savedT.active !== t.active ||
+                    prevSyncMode !== syncMode ||
                     prevTeamKey !== currTeamKey;
                   const teamUrl = `${origin}/${t.slug}`;
                   const isCopied = copiedLink === `team-${t.id}`;
@@ -1507,18 +1626,32 @@ export default function AttendantPanel() {
                   return (
                     <div
                       key={t.id}
-                      className={`team-column ${!t.active ? "is-paused" : ""} ${dragOverTarget === t.id ? "drag-over" : ""}`}
-                      onDragOver={(e) => handleDragOverColumn(e, t.id)}
+                      className={`team-column ${!t.active ? "is-paused" : ""} ${isMirrored ? "is-mirrored" : ""} ${dragOverTarget === t.id ? "drag-over" : ""}`}
+                      onDragOver={(e) => {
+                        if (!isMirrored) handleDragOverColumn(e, t.id);
+                      }}
                       onDragLeave={() => {
                         if (dragOverTarget === t.id) setDragOverTarget(null);
                       }}
-                      onDrop={(e) => handleDropOnColumn(e, t.id)}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        if (isMirrored) {
+                          setDraggingAgentId(null);
+                          setDragOverTarget(null);
+                          setDragOverCard(null);
+                          setError(
+                            `A equipe "${t.name}" espelha o Site Principal automaticamente — arraste ou adicione no Site Principal e ela acompanha.`,
+                          );
+                          return;
+                        }
+                        handleDropOnColumn(e, t.id);
+                      }}
                     >
                       <div className="team-column-header">
                         <div className="team-column-title-row">
                           <h3>
                             {t.name}
-                            <span className="team-count-badge">{teamAgents.length}</span>
+                            <span className="team-count-badge">{displayAgents.length}</span>
                           </h3>
                           <span className={`team-status-pill ${statusClass}`}>
                             {statusLabel}
@@ -1561,6 +1694,18 @@ export default function AttendantPanel() {
                           </div>
                         </div>
 
+                        <div className="team-sync-bar">
+                          <select
+                            aria-label={`Modo dos números na ${t.name}`}
+                            value={syncMode}
+                            onChange={(e) => updateTeamSyncModeStage(t.id, e.target.value as SyncMode)}
+                          >
+                            <option value="independent">Lista própria (manual)</option>
+                            <option value="general_reverse">Espelho do Site Principal (de trás pra frente)</option>
+                            <option value="general_same">Espelho do Site Principal (mesma ordem)</option>
+                          </select>
+                        </div>
+
                         <div className="team-toolbar">
                           <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                             <span>Lote:</span>
@@ -1578,7 +1723,7 @@ export default function AttendantPanel() {
                             <button
                               type="button"
                               className="duplicate-team-btn"
-                              onClick={() => duplicateColumnAsTeam(t.id)}
+                              onClick={() => duplicateColumnAsTeam(isMirrored ? null : t.id, "independent")}
                               title="Cria outra URL de equipe com cópias destes mesmos números"
                             >
                               Duplicar
@@ -1591,6 +1736,7 @@ export default function AttendantPanel() {
                                 setTeamSlug(t.slug);
                                 setTeamSlugTouched(true);
                                 setTeamBatch(t.batch_size);
+                                setTeamSyncMode(syncMode);
                               }}
                             >
                               Editar
@@ -1613,12 +1759,58 @@ export default function AttendantPanel() {
                       </div>
 
                       <div className="team-agents-list">
-                        {teamAgents.length === 0 ? (
-                          <div className="team-empty-drop">
-                            Arraste pelo menos 1 número para cá para ativar {origin}/{t.slug}
+                        {isMirrored && (
+                          <div className="team-mirror-banner">
+                            {syncMode === "general_reverse"
+                              ? "Sincronizado de trás pra frente com o Site Principal. Adições, edições e pausas lá refletem aqui automaticamente."
+                              : "Sincronizado na mesma ordem do Site Principal. Adições, edições e pausas lá refletem aqui automaticamente."}
                           </div>
+                        )}
+                        {displayAgents.length === 0 ? (
+                          <div className="team-empty-drop">
+                            {isMirrored
+                              ? "Nenhum número no Site Principal ainda — adicione no Site Principal para aparecer aqui."
+                              : `Arraste pelo menos 1 número para cá para ativar ${origin}/${t.slug}`}
+                          </div>
+                        ) : isMirrored ? (
+                          displayAgents.map((a, idx) => (
+                            <div
+                              key={`${t.id}-${a.id}`}
+                              className="team-agent-card is-mirrored-card"
+                            >
+                              <div className="team-agent-top">
+                                <div className="team-agent-info">
+                                  <span
+                                    className={`agent-order-badge ${idx === 0 ? "is-first" : ""}`}
+                                    title={`${idx + 1}º na fila espelhada`}
+                                  >
+                                    {idx + 1}º
+                                  </span>
+                                  <div>
+                                    <div className="team-agent-name">
+                                      {a.name}
+                                      <span className="mirror-sync-badge">
+                                        {syncMode === "general_reverse" ? "Espelho invertido" : "Espelho"}
+                                      </span>
+                                    </div>
+                                    <div className="team-agent-phone">{formatDisplayPhone(a.phone)}</div>
+                                  </div>
+                                </div>
+                                <span
+                                  className={a.active ? "active" : "paused"}
+                                  style={{ fontSize: "11px", fontWeight: 700 }}
+                                >
+                                  {a.active ? "Ativo" : "Pausado"}
+                                </span>
+                              </div>
+                              <div className="team-agent-meta">
+                                <span>Controlado pelo Site Principal</span>
+                                <span>Link direto: <code>/atendimento{a.position}</code></span>
+                              </div>
+                            </div>
+                          ))
                         ) : (
-                          teamAgents.map((a, idx) => renderAgentCard(a, idx, teamAgents.length))
+                          displayAgents.map((a, idx) => renderAgentCard(a, idx, displayAgents.length))
                         )}
                       </div>
                     </div>
@@ -1667,11 +1859,13 @@ export default function AttendantPanel() {
                     onChange={(e) => setAgentTeamId(e.target.value)}
                   >
                     <option value="">Site Principal (Rodízio Geral /)</option>
-                    {teams.map((t) => (
-                      <option key={t.id} value={t.id}>
-                        {t.name} (/{t.slug})
-                      </option>
-                    ))}
+                    {teams
+                      .filter((t) => !t.sync_mode || t.sync_mode === "independent")
+                      .map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.name} (/{t.slug})
+                        </option>
+                      ))}
                   </select>
                 </label>
                 <button className="primary">

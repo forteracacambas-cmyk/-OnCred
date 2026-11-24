@@ -622,6 +622,63 @@
   color: #ffffff;
 }
 
+.attendant-panel button.mirror-team-btn {
+  background: #2e1065;
+  color: #ddd6fe;
+  border-color: #6d28d9;
+  font-weight: 700;
+}
+
+.attendant-panel button.mirror-team-btn:hover:not(:disabled) {
+  background: #4c1d95;
+  color: #ffffff;
+}
+
+.team-column.is-mirrored {
+  border-color: #6d28d9;
+  background: linear-gradient(180deg, rgba(76, 29, 149, 0.2) 0%, #0e1829 100%);
+}
+
+.team-sync-bar select {
+  padding: 5px 8px;
+  font-size: 11px;
+  background: #0b1526;
+  border-color: #475569;
+  color: #e2e8f0;
+}
+
+.team-mirror-banner {
+  background: rgba(109, 40, 217, 0.14);
+  border: 1px solid rgba(139, 92, 246, 0.35);
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: #ddd6fe;
+}
+
+.team-agent-card.is-mirrored-card {
+  cursor: default;
+  border-color: rgba(139, 92, 246, 0.35);
+  background: #141c33;
+}
+
+.team-agent-card.is-mirrored-card:hover {
+  border-color: #8b5cf6;
+}
+
+.mirror-sync-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  background: rgba(139, 92, 246, 0.2);
+  color: #ddd6fe;
+  border: 1px solid rgba(139, 92, 246, 0.45);
+}
+
 .team-agent-phone {
   font-size: 11px;
   color: #94a3b8;
