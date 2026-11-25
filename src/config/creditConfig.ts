@@ -17,9 +17,9 @@ export const INSTITUTIONAL_DATA = {
 export const SIMULATOR_CONFIG = {
   PF: {
     label: "Pessoa Física",
-    minAmount: 1000,
+    minAmount: 5000,
     maxAmount: 50000,
-    step: 500,
+    step: 5000,
     defaultAmount: 10000,
     presetSteps: [5000, 10000, 20000, 35000, 50000],
   },
@@ -27,9 +27,9 @@ export const SIMULATOR_CONFIG = {
     label: "Pessoa Jurídica",
     minAmount: 5000,
     maxAmount: 100000,
-    step: 1000,
+    step: 5000,
     defaultAmount: 20000,
-    presetSteps: [10000, 20000, 50000, 75000, 100000],
+    presetSteps: [5000, 20000, 50000, 75000, 100000],
   },
 };
 
@@ -38,7 +38,7 @@ export const SIMULATOR_CONFIG = {
 // - Taxa mensal de referência: 1,35% a.m. (0.0135)
 // - Taxa anual equivalente aproximada: 17,46% a.a. (0.1746)
 // - Prazo geral da operação: de 6 a 120 meses
-// - Limites de valores: PF (R$ 1.000 a R$ 50.000) e PJ (R$ 5.000 a R$ 100.000)
+// - Limites de valores: PF (R$ 5.000 a R$ 50.000) e PJ (R$ 5.000 a R$ 100.000), de 5 em 5 mil
 // ============================================================================
 export const CREDIT_CONFIG = {
   monthlyInterestFrom: 0.0135,
@@ -54,7 +54,7 @@ export const CREDIT_CONFIG = {
   fees: null as string | null,
 
   pf: {
-    minAmount: 1000,
+    minAmount: 5000,
     maxAmount: 50000,
   },
 
@@ -78,17 +78,7 @@ export interface InstallmentRule {
 
 export const INSTALLMENT_RULES: InstallmentRule[] = [
   {
-    minAmount: 1000,
-    maxAmount: 1499.99,
-    minimumPayment: 150,
-  },
-  {
-    minAmount: 1500,
-    maxAmount: 3000,
-    minimumPayment: 200,
-  },
-  {
-    minAmount: 3000.01,
+    minAmount: 5000,
     maxAmount: 9000,
     minimumPayment: 250,
   },
@@ -127,7 +117,7 @@ export function getInstallmentRule(principal: number): InstallmentRule {
     (rule) => principal >= rule.minAmount - 0.001 && principal <= rule.maxAmount + 0.001
   );
   if (found) return found;
-  if (principal < 1000) return INSTALLMENT_RULES[0];
+  if (principal < 5000) return INSTALLMENT_RULES[0];
   return INSTALLMENT_RULES[INSTALLMENT_RULES.length - 1];
 }
 

@@ -174,7 +174,8 @@ export default function SimulationFunnelPage({ fixedAgent, fixedTeam }: Simulati
 
   const handleAmountChange = (newAmount: number) => {
     setValidationError(null);
-    const clamped = Math.max(currentConfig.minAmount, Math.min(newAmount, currentConfig.maxAmount));
+    const stepped = Math.round(newAmount / currentConfig.step) * currentConfig.step;
+    const clamped = Math.max(currentConfig.minAmount, Math.min(stepped, currentConfig.maxAmount));
     setAmount(clamped);
   };
 
@@ -435,7 +436,7 @@ export default function SimulationFunnelPage({ fixedAgent, fixedTeam }: Simulati
                   De quanto você precisa?
                 </h1>
                 <p className="text-xs text-slate-400">
-                  Toque nos valores sugeridos ou ajuste o controle deslizante:
+                  Toque nos valores sugeridos ou ajuste o controle deslizante (de 5 em 5 mil):
                 </p>
               </div>
 
@@ -447,6 +448,7 @@ export default function SimulationFunnelPage({ fixedAgent, fixedTeam }: Simulati
                 </div>
                 <div className="flex justify-between items-center text-[10px] sm:text-xs text-slate-400 mt-2 font-mono">
                   <span>Mín: {formatCurrencyBRL(currentConfig.minAmount)}</span>
+                  <span className="text-emerald-400/90">De 5 em 5 mil</span>
                   <span>Máx: {formatCurrencyBRL(currentConfig.maxAmount)}</span>
                 </div>
               </div>
