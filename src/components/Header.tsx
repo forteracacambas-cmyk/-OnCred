@@ -80,7 +80,7 @@ export const Header: React.FC<HeaderProps> = ({ onScrollToSimulator }) => {
         {/* Zone 3: Clean placeholder or empty zone */}
         <div className="hidden sm:flex items-center gap-2 text-xs font-mono text-emerald-400">
           <span className="w-2 h-2 rounded-full bg-emerald-400" />
-          <span className="text-[11px] text-slate-300">Plataforma Segura</span>
+          <span className="text-[11px] text-slate-300">Simulação Informativa</span>
         </div>
       </div>
     </header>

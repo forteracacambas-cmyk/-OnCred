@@ -145,6 +145,12 @@ export default function SimulationFunnelPage({ fixedAgent, fixedTeam }: Simulati
 
   // Cálculo da parcela estimada via PMT
   const estimatedPayment = calculateMonthlyPayment(amount, term, CREDIT_CONFIG.monthlyInterestFrom);
+  const illustrativeMonthlyRate = (CREDIT_CONFIG.monthlyInterestFrom * 100)
+    .toFixed(2)
+    .replace('.', ',');
+  const effectiveAnnualRate = ((Math.pow(1 + CREDIT_CONFIG.monthlyInterestFrom, 12) - 1) * 100)
+    .toFixed(2)
+    .replace('.', ',');
 
   const goToStep = (targetStep: 1 | 2 | 3 | 4) => {
     setValidationError(null);
@@ -275,7 +281,7 @@ export default function SimulationFunnelPage({ fixedAgent, fixedTeam }: Simulati
               ZM <span className="text-emerald-400">SCD</span>
             </span>
             <span className="text-[9px] text-slate-400 font-mono tracking-wider uppercase leading-none">
-              {teamCheck.status === 'online' ? `Simulador • ${teamCheck.name}` : 'Simulador Oficial'}
+              {teamCheck.status === 'online' ? `Simulador • ${teamCheck.name}` : 'Simulador Informativo'}
             </span>
           </div>
         </a>
@@ -283,7 +289,7 @@ export default function SimulationFunnelPage({ fixedAgent, fixedTeam }: Simulati
         <div className="flex items-center gap-3">
           <div className="hidden xs:flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-950/50 border border-emerald-500/20 text-emerald-300 text-[11px] font-medium">
             <Lock className="w-3 h-3 text-emerald-400" />
-            <span>Ambiente Seguro 256-bit</span>
+            <span>Simulação Gratuita • 18+</span>
           </div>
           <a
             href={returnHomeUrl}
@@ -341,7 +347,7 @@ export default function SimulationFunnelPage({ fixedAgent, fixedTeam }: Simulati
                   Para quem você deseja solicitar crédito?
                 </h1>
                 <p className="text-xs sm:text-sm text-slate-400">
-                  Selecione uma das opções abaixo para personalizar sua proposta:
+                  Selecione uma das opções abaixo para configurar sua simulação:
                 </p>
               </div>
 
@@ -470,7 +476,7 @@ export default function SimulationFunnelPage({ fixedAgent, fixedTeam }: Simulati
               {/* Chips de valores sugeridos */}
               <div>
                 <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block mb-2">
-                  Atalhos de valores rápidos:
+                  Valores de exemplo da simulação:
                 </span>
                 <div className="grid grid-cols-3 sm:grid-cols-5 gap-1.5 sm:gap-2">
                   {currentConfig.presetSteps.map((val) => (
@@ -537,8 +543,8 @@ export default function SimulationFunnelPage({ fixedAgent, fixedTeam }: Simulati
                     <span className="text-xl sm:text-2xl font-black text-white">{term} meses</span>
                   </div>
                   <div className="text-right">
-                    <span className="text-[10px] text-slate-400 font-medium uppercase tracking-wider block">Taxa de Referência</span>
-                    <span className="text-xs sm:text-sm font-bold text-emerald-400">a partir de 1,35% a.m.</span>
+                    <span className="text-[10px] text-slate-400 font-medium uppercase tracking-wider block">Taxa Ilustrativa da Simulação</span>
+                    <span className="text-xs sm:text-sm font-bold text-emerald-400">{illustrativeMonthlyRate}% a.m. ({effectiveAnnualRate}% a.a. ef.)</span>
                   </div>
                 </div>
 
@@ -547,8 +553,8 @@ export default function SimulationFunnelPage({ fixedAgent, fixedTeam }: Simulati
                   {formatCurrencyExactBRL(estimatedPayment)}
                   <span className="text-xs sm:text-sm text-slate-400 font-normal ml-1">/mês</span>
                 </div>
-                <p className="text-[10px] text-slate-400 mt-1.5">
-                  Cálculo simulado via tabela Price. Sujeito à análise cadastral e de crédito.
+                <p className="text-[10px] text-slate-400 mt-1.5 leading-relaxed">
+                  Cálculo ilustrativo pela Tabela Price apenas com juros da simulação ({effectiveAnnualRate}% a.a. efetiva equivalente, não nominal nem CET). Não inclui IOF, tarifas ou seguros. Prazo da simulação, sem promessa de disponibilidade; crédito sujeito à análise e proposta individual com CET.
                 </p>
               </div>
 
@@ -565,15 +571,15 @@ export default function SimulationFunnelPage({ fixedAgent, fixedTeam }: Simulati
                   className="w-full h-2.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-emerald-400 focus:outline-none"
                 />
                 <div className="flex justify-between items-center text-[10px] text-slate-400 mt-1 font-mono">
-                  <span>Mín: {CREDIT_CONFIG.minimumTermMonths} meses</span>
-                  <span>Máx: {maxAllowedTerm} meses</span>
+                  <span>Mín. da simulação: {CREDIT_CONFIG.minimumTermMonths} meses</span>
+                  <span>Máx. da simulação: {maxAllowedTerm} meses</span>
                 </div>
               </div>
 
-              {/* Chips de Prazos Rápidos */}
+              {/* Chips de Prazos */}
               <div>
                 <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block mb-2">
-                  Atalhos de prazos:
+                  Prazos da simulação:
                 </span>
                 <div className="grid grid-cols-3 sm:grid-cols-6 gap-1.5 sm:gap-2">
                   {[12, 24, 36, 48, 60, 72].filter((t) => t <= maxAllowedTerm).map((t) => (
@@ -623,13 +629,13 @@ export default function SimulationFunnelPage({ fixedAgent, fixedTeam }: Simulati
               <div className="text-center mb-3">
                 <div className="inline-flex items-center gap-1.5 px-3 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 text-xs font-semibold mb-1">
                   <Sparkles className="w-3.5 h-3.5" />
-                  <span>Proposta Inicial Pronta</span>
+                  <span>Simulação Ilustrativa</span>
                 </div>
                 <h1 className="text-lg sm:text-2xl font-extrabold text-white tracking-tight">
                   Resumo da sua simulação
                 </h1>
                 <p className="text-xs text-slate-400">
-                  Verifique os dados calculados antes de iniciar seu atendimento:
+                  Verifique os dados calculados antes de continuar para atendimento via WhatsApp:
                 </p>
               </div>
 
@@ -644,27 +650,32 @@ export default function SimulationFunnelPage({ fixedAgent, fixedTeam }: Simulati
                   <span className="font-bold text-emerald-400 text-base">{formatCurrencyBRL(amount)}</span>
                 </div>
                 <div className="flex items-center justify-between py-2.5">
-                  <span className="text-slate-400">Prazo Escolhido:</span>
+                  <span className="text-slate-400">Prazo da Simulação:</span>
                   <span className="font-bold text-white">{term} meses</span>
                 </div>
                 <div className="flex items-center justify-between py-2.5">
-                  <span className="text-slate-400">Taxa de Referência:</span>
-                  <span className="font-bold text-emerald-400">a partir de 1,35% a.m.</span>
+                  <span className="text-slate-400">Taxa Ilustrativa (não é CET):</span>
+                  <span className="font-bold text-emerald-400">{illustrativeMonthlyRate}% a.m. ({effectiveAnnualRate}% a.a. ef.)</span>
                 </div>
                 <div className="flex items-center justify-between pt-2.5">
-                  <span className="text-slate-300 font-semibold">Parcela Mensal Estimada:</span>
+                  <span className="text-slate-300 font-semibold">Parcela Mensal Estimada (Price):</span>
                   <span className="font-black text-emerald-400 text-lg sm:text-xl">
                     {formatCurrencyExactBRL(estimatedPayment)}
                   </span>
                 </div>
               </div>
 
-              {/* Mensagem de Transparência e Segurança */}
-              <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 text-[11px] text-slate-400 leading-relaxed flex items-start gap-2">
+              {/* Mensagem de Transparência e Papéis */}
+              <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 text-[11px] text-slate-300 leading-relaxed flex items-start gap-2">
                 <Info className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
-                <span>
-                  Esta é uma simulação preliminar informativa. A aprovação e as condições finais dependem da análise cadastral. <strong className="text-slate-200">A ZM SCD não solicita pagamentos ou taxas antecipadas.</strong>
-                </span>
+                <div className="space-y-1.5">
+                  <p>
+                    <strong>Simulação gratuita e ilustrativa (18+).</strong> Cálculo pela Tabela Price sem IOF, tarifas, seguros ou CET; não garante taxa mínima, prazo ou aprovação.
+                  </p>
+                  <p className="text-slate-400">
+                    Página em <span className="font-mono">{INSTITUTIONAL_DATA.domain}</span> operada sob responsabilidade de <strong className="text-slate-200">{INSTITUTIONAL_DATA.legalName}</strong> (CNPJ {INSTITUTIONAL_DATA.cnpj}). Ao continuar, o WhatsApp abrirá com esta simulação para um atendente cadastrado neste canal recebê-la se você confirmar o envio. A análise e a eventual concessão do crédito são feitas pela instituição financeira responsável após proposta individual com CET, sem cobrança antecipada.
+                  </p>
+                </div>
               </div>
 
               {/* Checkbox de Aceite da Política de Privacidade (pré-marcado como padrão conforme regras) */}
@@ -742,8 +753,8 @@ export default function SimulationFunnelPage({ fixedAgent, fixedTeam }: Simulati
                     </>
                   )}
                 </button>
-                <p className="text-center text-[10px] text-slate-400">
-                  Você será direcionado ao atendimento oficial no WhatsApp da ZM SCD.
+                <p className="text-center text-[10px] text-slate-400 leading-relaxed">
+                  Ao continuar, você será direcionado ao aplicativo WhatsApp para enviar os dados a um atendente cadastrado neste canal ({INSTITUTIONAL_DATA.legalName}). A mensagem só é enviada se você confirmar no aplicativo; crédito sujeito à análise e proposta individual com CET.
                 </p>
               </div>
 

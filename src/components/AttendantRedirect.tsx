@@ -71,7 +71,7 @@ export default function AttendantRedirect() {
           </div>
           <h1 className="text-2xl font-bold mb-3">Nenhuma simulação ativa</h1>
           <p className="text-slate-300 leading-relaxed mb-6">
-            Para falar com um de nossos atendentes, realize primeiro a sua simulação de crédito personalizada.
+            Para falar com um atendente, realize primeiro a sua simulação informativa de crédito.
           </p>
           <a
             href="/simulacao"
@@ -80,7 +80,7 @@ export default function AttendantRedirect() {
             Voltar ao simulador
           </a>
           <a href="https://zmscd.online/" className="block mt-4 text-xs underline text-slate-400 hover:text-slate-200">
-            Canais institucionais da ZM SCD
+            Página inicial da ZM SCD
           </a>
         </section>
       </main>
@@ -105,17 +105,20 @@ export default function AttendantRedirect() {
         </h1>
         <p role={error ? "alert" : "status"} aria-live="polite" className="text-slate-300 leading-relaxed mb-6">
           {error || (isDirect && agentName
-            ? `Direcionando você para o WhatsApp exclusivo de ${agentName}. Sua simulação está pronta para envio.`
+            ? `Direcionando você para o WhatsApp cadastrado para ${agentName}. Sua simulação está pronta para revisão antes do envio.`
             : teamName
-            ? `Estamos direcionando você para um especialista da ${teamName}. Sua mensagem está pronta para continuar.`
-            : "Estamos direcionando você para um atendente disponível. Sua mensagem está pronta para continuar.")}
+            ? `Direcionando você para o WhatsApp de um atendente cadastrado na ${teamName}. Sua mensagem está pronta para revisão antes do envio.`
+            : "Direcionando você para o WhatsApp de um atendente cadastrado neste canal. Sua mensagem está pronta para revisão antes do envio.")}
         </p>
         {/* Pixel de conversão ativado automaticamente nesta página (/contato) */}
         {href && <a href={href} className="block rounded-xl bg-emerald-500 px-5 py-4 text-slate-950 font-bold hover:bg-emerald-400">Abrir WhatsApp</a>}
         {href && <p className="text-xs text-slate-400 mt-3">Se o aplicativo não abrir automaticamente, toque no botão acima.</p>}
         {error && <button onClick={() => setAttempt(v => v + 1)} className="w-full rounded-xl bg-blue-600 px-5 py-4 font-bold hover:bg-blue-500">Tentar novamente</button>}
-        {error && <a href="https://zmscd.online/" className="block mt-4 underline text-blue-200">Consultar os canais institucionais da ZM SCD</a>}
-        <a href="/simulacao" className="inline-block mt-6 text-sm text-slate-300 underline">Voltar ao simulador</a>
+        {error && <a href="https://zmscd.online/" className="block mt-4 underline text-blue-200">Voltar à página inicial da ZM SCD</a>}
+        <p className="mt-5 text-[11px] text-slate-400 leading-relaxed border-t border-white/10 pt-4">
+          Página sob responsabilidade de ZM SOCIEDADE DE CREDITO DIRETO SA (CNPJ 49.947.715/0001-45). O envio da simulação no WhatsApp ocorre apenas com sua confirmação; a análise cadastral, a apresentação do CET na proposta individual e a eventual concessão de crédito cabem à instituição financeira responsável, para maiores de 18 anos e sem cobrança antecipada.
+        </p>
+        <a href="/simulacao" className="inline-block mt-4 text-sm text-slate-300 underline">Voltar ao simulador</a>
       </section>
     </main>
   );

@@ -1,5 +1,6 @@
 import React from 'react';
-import { ShieldCheck, MessageSquare, Building, CheckCircle2 } from 'lucide-react';
+import { ShieldCheck } from 'lucide-react';
+import { INSTITUTIONAL_DATA } from '../config/creditConfig';
 
 export function OperationModel() {
   return (
@@ -16,10 +17,10 @@ export function OperationModel() {
 
           <div className="mt-5 space-y-3.5 text-xs sm:text-sm text-slate-300 leading-relaxed">
             <p>
-              Nossa plataforma possibilita que você configure o valor e o prazo ideais para sua necessidade e dê início à triagem cadastral sem custo algum.
+              Esta página em <span className="font-mono text-slate-200">{INSTITUTIONAL_DATA.domain}</span>, operada sob responsabilidade de <strong className="text-white">{INSTITUTIONAL_DATA.legalName}</strong> (CNPJ {INSTITUTIONAL_DATA.cnpj}), permite simular valores e prazos de forma gratuita e ilustrativa para maiores de 18 anos.
             </p>
             <p>
-              A análise e eventual formalização são realizadas diretamente pela instituição responsável pela operação. Você tem acesso integral a todas as condições (taxa de juros, CET, tarifas e prazos) antes de assumir qualquer compromisso financeiro.
+              Ao prosseguir, a solicitação é recebida por um atendente cadastrado neste canal via WhatsApp. A análise cadastral, a apresentação da proposta individual (com taxa efetiva, CET, IOF, tarifas e prazos) e a eventual concessão de crédito cabem à instituição financeira responsável, sem garantia de aprovação.
             </p>
             <p className="text-slate-400 text-xs pt-2 border-t border-slate-800">
               A mensagem com os dados de sua simulação só é enviada quando você confirma o envio no aplicativo do WhatsApp.

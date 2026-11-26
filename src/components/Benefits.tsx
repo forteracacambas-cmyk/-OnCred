@@ -15,22 +15,22 @@ export const Benefits: React.FC = () => {
     },
     {
       title: 'Triagem direta no WhatsApp',
-      description: 'Envio rápido dos parâmetros calculados diretamente para um atendente humano dedicado.',
+      description: 'Encaminhamento dos parâmetros calculados para um atendente cadastrado neste canal mediante sua confirmação.',
       icon: Zap,
     },
     {
       title: 'Análise individualizada',
-      description: 'As condições são calculadas sob medida pela instituição responsável conforme o perfil cadastral.',
+      description: 'As condições finais (taxa, CET, tributos e prazos) são definidas pela instituição responsável conforme análise cadastral.',
       icon: UserCheck,
     },
     {
       title: 'Sem filas de agências',
-      description: 'Elimine burocracias e trâmites presenciais tradicionais com documentação digital simplificada.',
+      description: 'Inicie a simulação e o contato inicial de forma digital antes da etapa de análise documental.',
       icon: Globe,
     },
     {
-      title: 'Sigilo e segurança LGPD',
-      description: 'Seus dados de contato e informações são protegidos com respeito rigoroso à legislação vigente.',
+      title: 'Privacidade e cuidado com dados',
+      description: 'Não solicitamos senhas bancárias, dados de cartão ou pagamentos prévios nesta página. Consulte a Política de Privacidade.',
       icon: CheckCircle2,
     },
   ];
@@ -41,13 +41,13 @@ export const Benefits: React.FC = () => {
 
         <div className="text-center max-w-2xl mx-auto mb-14">
           <span className="text-xs font-bold text-emerald-400 uppercase tracking-widest font-mono">
-            Vantagens do Modelo Digital
+            Estrutura Digital
           </span>
           <h2 className="text-2xl sm:text-3xl font-extrabold text-white mt-2 tracking-tight">
-            Por que simular com a ZM SCD?
+            Como funciona a simulação na ZM SCD
           </h2>
           <p className="text-sm sm:text-base text-slate-300 mt-2">
-            Estrutura voltada à eficiência, respeito aos seus dados e clareza em todas as etapas.
+            Simulação gratuita e ilustrativa para maiores de 18 anos, com transparência antes de contratar.
           </p>
         </div>
 

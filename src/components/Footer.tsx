@@ -80,10 +80,10 @@ export function Footer({ onOpenPrivacy, onOpenTerms }: Props) {
             </ul>
           </div>
 
-          {/* Col 3: Contato Oficial */}
+          {/* Col 3: Canais de Contato */}
           <div>
             <h3 className="font-bold text-white text-xs uppercase tracking-wider mb-3.5">
-              Contato Oficial
+              Canais de Contato
             </h3>
             <div className="space-y-2.5">
               <a
@@ -111,7 +111,7 @@ export function Footer({ onOpenPrivacy, onOpenTerms }: Props) {
               </a>
             </div>
             <p className="text-[11px] text-slate-400 mt-4 leading-relaxed">
-              Atendimento exclusivo para simulação e triagem inicial via canal digital.
+              Canal informativo para simulação ilustrativa e encaminhamento de solicitação.
             </p>
           </div>
         </div>
@@ -119,7 +119,7 @@ export function Footer({ onOpenPrivacy, onOpenTerms }: Props) {
         {/* Regulatory Disclaimers */}
         <div className="border-t border-slate-900 pt-8 space-y-3 text-[11px] leading-relaxed text-slate-400">
           <p>
-            Esta página realiza simulação informativa e encaminhamento de interesse. A aprovação, disponibilidade e contratação dependem de análise e apresentação prévia das condições pela instituição responsável. Serviço destinado exclusivamente a maiores de 18 anos.
+            Página em {company.domain} operada sob responsabilidade de {company.legalName} (CNPJ {company.cnpj}). Realiza simulação gratuita e ilustrativa e encaminha a solicitação via WhatsApp para um atendente cadastrado neste canal somente após sua confirmação. A análise cadastral, a definição de taxas, CET, IOF, tarifas e prazos na proposta individual e a eventual concessão de crédito cabem à instituição financeira responsável, sem garantia de aprovação ou taxa mínima. Para maiores de 18 anos.
           </p>
           <div className="p-3 bg-amber-950/20 border border-amber-500/20 rounded-xl text-amber-200/90 flex items-start gap-2">
             <Lock className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
@@ -129,7 +129,7 @@ export function Footer({ onOpenPrivacy, onOpenTerms }: Props) {
           </div>
           <div className="flex flex-col sm:flex-row items-center justify-between pt-4 border-t border-slate-900/60 text-slate-400 text-[11px] gap-2">
             <span>© {new Date().getFullYear()} {company.legalName}. Todos os direitos reservados.</span>
-            <span>Domínio oficial: {company.domain}</span>
+            <span>Site: {company.domain}</span>
           </div>
         </div>
       </div>

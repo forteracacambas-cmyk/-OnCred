@@ -10,6 +10,8 @@ import {
 import { trackEvent } from '../utils/tracking';
 import { initVisitor } from '../utils/atendimento';
 
+import { CREDIT_CONFIG } from '../config/creditConfig';
+
 interface SimulatorHeroProps {
   onOpenPrivacy: () => void;
   onOpenConfig?: () => void;
@@ -19,6 +21,10 @@ interface SimulatorHeroProps {
 }
 
 export const SimulatorHero: React.FC<SimulatorHeroProps> = ({ fixedAgent, fixedTeam, teamName }) => {
+  const illustrativeMonthlyRate = (CREDIT_CONFIG.monthlyInterestFrom * 100)
+    .toFixed(2)
+    .replace('.', ',');
+
   useEffect(() => {
     initVisitor().catch(() => {});
     trackEvent('page_view');
@@ -64,7 +70,7 @@ export const SimulatorHero: React.FC<SimulatorHeroProps> = ({ fixedAgent, fixedT
           <div className="inline-flex items-center justify-center gap-1.5 px-3.5 py-1.5 rounded-full bg-emerald-950/60 border border-emerald-500/30 text-center shadow-sm mb-3 sm:mb-5">
             <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
             <span className="text-[11px] sm:text-xs text-emerald-200 font-medium">
-              ZM Sociedade de Crédito Direto • Regulada pelo Banco Central • 18+
+              ZM Sociedade de Crédito Direto S.A. • CNPJ 49.947.715/0001-45 • 18+
             </span>
           </div>
 
@@ -72,22 +78,22 @@ export const SimulatorHero: React.FC<SimulatorHeroProps> = ({ fixedAgent, fixedT
             <div className="mb-3 sm:mb-4">
               <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-900/90 border border-emerald-500/40 text-emerald-300 text-[11px] font-semibold tracking-wide">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                Canal dedicado • {teamName}
+                Canal de atendimento • {teamName}
               </span>
             </div>
           )}
 
           {/* Headline com tipografia balanceada */}
           <h1 className="text-2xl sm:text-4xl md:text-5xl font-extrabold tracking-tight text-white mb-4 sm:mb-6 leading-tight" style={{ textWrap: 'balance' }}>
-            Crédito inteligente para seus planos com <span className="text-emerald-400 underline decoration-emerald-500/30 underline-offset-8">aprovação ágil</span>
+            Simulação de crédito <span className="text-emerald-400 underline decoration-emerald-500/30 underline-offset-8">online</span>
           </h1>
 
           <p className="text-xs sm:text-base text-slate-300 leading-relaxed max-w-xl mx-auto mb-6 sm:mb-8">
-            Faça sua simulação 100% online em poucos passos na nossa plataforma exclusiva, descubra a parcela ideal para o seu bolso e seja atendido com rapidez e segurança.
+            Simule valores e prazos de referência em poucos passos e encaminhe seu interesse para atendimento humano pelo WhatsApp.
           </p>
 
           {/* BOTÃO PRINCIPAL DE INICIAR SIMULAÇÃO ISOLADA */}
-          <div className="flex flex-col sm:flex-row items-center justify-center gap-4 mb-8 sm:mb-10">
+          <div className="flex flex-col items-center justify-center gap-3 mb-8 sm:mb-10">
             <a
               href={simulationUrl}
               onClick={handleStartFunnel}
@@ -96,9 +102,12 @@ export const SimulatorHero: React.FC<SimulatorHeroProps> = ({ fixedAgent, fixedT
               <span>Iniciar Simulação Gratuita</span>
               <ArrowRight className="w-4 h-4 sm:w-5 sm:h-5 shrink-0 group-hover:translate-x-1 transition-transform" />
             </a>
+            <p className="text-[11px] sm:text-xs text-slate-300 leading-relaxed max-w-xl mx-auto">
+              Simulação gratuita e ilustrativa. Para maiores de 18 anos. Crédito sujeito à análise e aprovação. Consulte taxas, CET, prazos e demais condições antes de contratar.
+            </p>
           </div>
 
-          {/* Benefícios rápidos em destaque */}
+          {/* Informações em destaque */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 sm:gap-4 pt-6 sm:pt-8 border-t border-slate-800/80 text-xs sm:text-sm text-slate-300">
             <div className="flex items-center justify-center gap-2 p-2.5 sm:p-3 rounded-xl bg-slate-900/60 border border-slate-800">
               <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
@@ -110,7 +119,7 @@ export const SimulatorHero: React.FC<SimulatorHeroProps> = ({ fixedAgent, fixedT
             </div>
             <div className="flex items-center justify-center gap-2 p-2.5 sm:p-3 rounded-xl bg-slate-900/60 border border-slate-800">
               <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-              <span>Taxa ref. a partir de 1,35% a.m.</span>
+              <span>Taxa ilustrativa da simulação: {illustrativeMonthlyRate}% a.m.</span>
             </div>
           </div>
         </div>

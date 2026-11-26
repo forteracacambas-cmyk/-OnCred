@@ -14,14 +14,14 @@ export const HowItWorks: React.FC = () => {
       number: '02',
       title: 'Conecte-se pelo WhatsApp',
       description:
-        'Encaminhe sua simulação pelo canal oficial para atendimento humanizado e envio seguro dos dados cadastrais.',
+        'Ao confirmar no WhatsApp, sua simulação é encaminhada para um atendente cadastrado neste canal para triagem inicial.',
       icon: Send,
     },
     {
       number: '03',
-      title: 'Análise e formalização',
+      title: 'Análise e proposta individual',
       description:
-        'Nossa equipe avalia a melhor proposta com taxa clara e você decide se contrata após ver todas as condições.',
+        'A instituição financeira responsável realiza a análise de crédito e apresenta a proposta individual com taxas, CET, tributos e prazos antes de qualquer contratação.',
       icon: FileCheck,
     },
   ];
@@ -38,7 +38,7 @@ export const HowItWorks: React.FC = () => {
             Como funciona a sua solicitação na ZM SCD
           </h2>
           <p className="text-sm sm:text-base text-slate-300 mt-3 leading-relaxed">
-            Sem filas, sem burocracia desnecessária e com total clareza em cada etapa.
+            Etapas claras entre a simulação ilustrativa, o atendimento pelo WhatsApp e a proposta individual com CET.
           </p>
         </div>
 

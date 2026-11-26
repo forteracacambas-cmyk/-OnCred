@@ -52,9 +52,9 @@ export function AboutSants() {
           {/* Card Canais de Contato */}
           <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-6 sm:p-7 shadow-lg flex flex-col justify-between">
             <div>
-              <h3 className="font-bold text-white text-base mb-4">Canais de Atendimento Oficial</h3>
+              <h3 className="font-bold text-white text-base mb-4">Canais de Contato</h3>
               <p className="text-xs text-slate-400 mb-6 leading-relaxed">
-                Nossa equipe presta suporte transparente e sem taxas prévias. Utilize nossos canais verificados:
+                Canais informados pela {company.legalName} para atendimento e esclarecimentos, sem cobrança de taxas prévias:
               </p>
 
               <div className="space-y-3 text-xs">
@@ -75,7 +75,7 @@ export function AboutSants() {
                 >
                   <Mail className="w-4 h-4 text-emerald-400 shrink-0" />
                   <div>
-                    <span className="text-[11px] text-slate-400 block">E-mail Oficial:</span>
+                    <span className="text-[11px] text-slate-400 block">E-mail de Contato:</span>
                     <strong className="font-mono">{company.email}</strong>
                   </div>
                 </a>
@@ -88,7 +88,7 @@ export function AboutSants() {
                 >
                   <Globe className="w-4 h-4 text-emerald-400 shrink-0" />
                   <div>
-                    <span className="text-[11px] text-slate-400 block">Domínio Oficial:</span>
+                    <span className="text-[11px] text-slate-400 block">Site da Operação:</span>
                     <strong className="font-mono text-emerald-400">{company.domain}</strong>
                   </div>
                 </a>

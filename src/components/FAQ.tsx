@@ -4,7 +4,7 @@ import { ChevronDown, HelpCircle } from 'lucide-react';
 const items = [
   [
     'A simulação garante aprovação automática?',
-    'Não. A simulação realizada no site é uma estimativa matemática ilustrativa com base na taxa de referência. As condições efetivas, prazos e eventual aprovação dependem de análise cadastral e de crédito realizada pela instituição financeira responsável.',
+    'Não. A simulação realizada no site é gratuita e ilustrativa, calculada apenas com a taxa ilustrativa da simulação (sem IOF, tarifas, seguros ou CET). As condições efetivas, prazos e eventual aprovação dependem de análise cadastral e de crédito realizada pela instituição financeira responsável.',
   ],
   [
     'Cobram algum valor ou taxa antecipada para liberar empréstimo?',
@@ -12,15 +12,15 @@ const items = [
   ],
   [
     'Quem recebe minha solicitação após clicar em Solicitar Análise?',
-    'Ao clicar no botão, os dados da sua simulação são preparados para abertura no WhatsApp oficial e encaminhados a um atendente disponível da nossa equipe para dar início à triagem cadastral.',
+    'Ao continuar, os dados da sua simulação são preparados no aplicativo WhatsApp para envio a um atendente cadastrado neste canal para iniciar o atendimento. A mensagem só é enviada se você confirmar o envio no aplicativo.',
   ],
   [
     'Por que as parcelas e os prazos mudam conforme o valor?',
-    'A calculadora utiliza regras de sustentabilidade financeira que limitam o prazo máximo em função do montante solicitado, assegurando que o valor mensal da parcela seja condizente com a modalidade.',
+    'Os prazos exibidos são parâmetros da simulação ajustados ao valor escolhido para evitar prestações incompatíveis na calculadora. Eles não representam promessa de disponibilidade; os prazos definitivos constam na proposta individual após análise.',
   ],
   [
-    'A taxa de 1,35% ao mês é uma oferta definitiva?',
-    'Não. A taxa de 1,35% a.m. é uma taxa de referência informativa adotada para a simulação inicial. A taxa efetiva, CET, tributos (IOF) e tarifas serão discriminados detalhadamente na proposta individual.',
+    'A taxa de 1,35% ao mês é uma oferta definitiva ou taxa mínima?',
+    'Não. A taxa de 1,35% a.m. (equivalente efetiva anual de 17,46% a.a., não nominal nem CET) é apenas uma taxa ilustrativa da simulação e não representa promessa de taxa mínima nem oferta aprovada. A taxa efetiva, o CET, o IOF e eventuais tarifas são informados na proposta individual.',
   ],
   [
     'Preciso informar CPF, senha bancária ou dados de cartão neste site?',
