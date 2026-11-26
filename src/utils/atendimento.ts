@@ -80,6 +80,7 @@ export async function api(
     credentials: "same-origin",
     cache: "no-store",
     headers: {
+      "X-Requested-With": "oncred-panel",
       ...(data !== undefined ? { "Content-Type": "application/json" } : {}),
       ...(token ? { Authorization: "Bearer " + token } : {}),
     },

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../utils/atendimento";
 import "./panel.css";
 
@@ -28,6 +28,30 @@ type Snapshot = {
   batchSize: number;
   teams: Team[];
   agents: Agent[];
+};
+
+type QueuePreview = {
+  activeCount: number;
+  batchSize: number;
+  maxToday: number;
+  receivingNow: {
+    id: string;
+    name: string;
+    phone: string;
+    todayCount: number;
+    usedInBatch: number;
+    batchSize: number;
+    remainingToSwitch: number | null;
+    equalizing: boolean;
+    missingToEqualize: number;
+  } | null;
+  nextUp: {
+    id: string;
+    name: string;
+    todayCount: number;
+    equalizing: boolean;
+    missingToEqualize: number;
+  } | null;
 };
 
 const periods = [
@@ -179,6 +203,8 @@ function serializeSnapshot(batchSize: number, teams: Team[], agents: Agent[]) {
 
 export default function AttendantPanel() {
   const [token, setToken] = useState(""),
+    [authed, setAuthed] = useState(false),
+    [authChecked, setAuthChecked] = useState(false),
     [password, setPassword] = useState(""),
     [error, setError] = useState(""),
     [notice, setNotice] = useState(""),
@@ -196,7 +222,10 @@ export default function AttendantPanel() {
     [period, setPeriod] = useState("today"),
     [stats, setStats] = useState<any>(null),
     [copiedLink, setCopiedLink] = useState<string | null>(null),
-    [verifiedTeams, setVerifiedTeams] = useState<Record<string, { online: boolean; agentCount: number }>>({});
+    [verifiedTeams, setVerifiedTeams] = useState<Record<string, { online: boolean; agentCount: number }>>({}),
+    [autoRefresh, setAutoRefresh] = useState(true),
+    [refreshingStats, setRefreshingStats] = useState(false),
+    [lastStatsAt, setLastStatsAt] = useState<number | null>(null);
 
   // Agent form state
   const [editing, setEditing] = useState<Agent | null>(null),
@@ -217,6 +246,10 @@ export default function AttendantPanel() {
     [dragOverTarget, setDragOverTarget] = useState<string | null>(null),
     [dragOverCard, setDragOverCard] = useState<{ id: string; placement: "before" | "after" } | null>(null);
 
+  const refreshInFlightRef = useRef(false);
+  const tokenRef = useRef(token);
+  tokenRef.current = token;
+
   const origin = typeof window !== "undefined" ? window.location.origin : "https://zmscd.online";
 
   const isDirty = useMemo(() => {
@@ -225,6 +258,9 @@ export default function AttendantPanel() {
       serializeSnapshot(savedSnapshot.batchSize, savedSnapshot.teams, savedSnapshot.agents)
     );
   }, [batch, teams, agents, savedSnapshot]);
+
+  const isDirtyRef = useRef(isDirty);
+  isDirtyRef.current = isDirty;
 
   const savedTeamMap = useMemo(() => {
     const map = new Map<string, Team>();
@@ -250,19 +286,20 @@ export default function AttendantPanel() {
     }
   };
 
-  const request = async (path: string, method = "GET", data?: unknown) => {
+  const request = useCallback(async (path: string, method = "GET", data?: unknown) => {
     try {
-      return await api("admin/" + path, method, data, token);
+      return await api("admin/" + path, method, data, tokenRef.current || undefined);
     } catch (e: any) {
       if (e.status === 401) {
         setToken("");
+        setAuthed(false);
         setStats(null);
         setAgents([]);
         setTeams([]);
       }
       throw e;
     }
-  };
+  }, []);
 
   const sortAgentsByPosition = (list: Agent[]) =>
     [...list].sort((a, b) => (a.position - b.position) || a.id.localeCompare(b.id));
@@ -317,14 +354,79 @@ export default function AttendantPanel() {
     ]);
     applyServerSnapshot(config);
     setStats(totals);
+    setLastStatsAt(Date.now());
     verifyTeamsOnServer(config.teams || []).catch(() => {});
   };
+
+  const refreshLiveStats = useCallback(
+    async (manual = false) => {
+      if (!authed || refreshInFlightRef.current) return;
+      refreshInFlightRef.current = true;
+      setRefreshingStats(true);
+      try {
+        if (manual && !isDirtyRef.current) {
+          const [config, totals] = await Promise.all([
+            request("config"),
+            request("stats?period=" + period),
+          ]);
+          if (!isDirtyRef.current) {
+            applyServerSnapshot(config);
+          }
+          setStats(totals);
+          setLastStatsAt(Date.now());
+          verifyTeamsOnServer(config.teams || []).catch(() => {});
+          setNotice("Contadores e fila atualizados em tempo real.");
+        } else {
+          const totals = await request("stats?period=" + period);
+          setStats(totals);
+          setLastStatsAt(Date.now());
+          if (manual) {
+            setNotice("Contadores ao vivo atualizados (seu rascunho não salvo foi preservado).");
+          }
+        }
+      } catch (e: any) {
+        if (manual) setError(e.message);
+      } finally {
+        refreshInFlightRef.current = false;
+        setRefreshingStats(false);
+      }
+    },
+    [authed, period, request],
+  );
 
   useEffect(() => {
     document.title = "Painel de atendentes | ZM SCD";
     document
       .querySelector('meta[name="robots"]')
       ?.setAttribute("content", "noindex,nofollow");
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    api("admin/config", "GET")
+      .then(async (config) => {
+        if (!alive) return;
+        applyServerSnapshot(config);
+        setAuthed(true);
+        const totals = await api("admin/stats?period=" + period, "GET");
+        if (!alive) return;
+        setStats(totals);
+        setLastStatsAt(Date.now());
+        verifyTeamsOnServer(config.teams || []).catch(() => {});
+      })
+      .catch((e: any) => {
+        if (!alive) return;
+        if (e?.status && e.status !== 401) {
+          setError(e.message || "Erro ao verificar sessão.");
+        }
+        setAuthed(false);
+      })
+      .finally(() => {
+        if (alive) setAuthChecked(true);
+      });
+    return () => {
+      alive = false;
+    };
   }, []);
 
   useEffect(() => {
@@ -338,34 +440,36 @@ export default function AttendantPanel() {
   }, [isDirty]);
 
   useEffect(() => {
-    if (!token) return;
+    if (!authed) return;
     let alive = true;
     request("stats?period=" + period)
       .then((s) => {
-        if (alive) setStats(s);
+        if (alive) {
+          setStats(s);
+          setLastStatsAt(Date.now());
+        }
       })
       .catch((e) => setError(e.message));
     return () => {
       alive = false;
     };
-  }, [token, period]);
+  }, [authed, period, request]);
 
   useEffect(() => {
-    if (!token) return;
-    refresh().catch((e) => setError(e.message));
-  }, [token]);
-
-  useEffect(() => {
-    if (!token) return;
-    const timer = setTimeout(() => {
-      setToken("");
-      setStats(null);
-      setAgents([]);
-      setTeams([]);
-      setError("Sessão encerrada. Entre novamente.");
-    }, 30 * 60000);
-    return () => clearTimeout(timer);
-  }, [token]);
+    if (!authed || !autoRefresh) return;
+    const interval = window.setInterval(() => {
+      if (typeof document !== "undefined" && document.hidden) return;
+      refreshLiveStats(false);
+    }, 5000);
+    const onVis = () => {
+      if (!document.hidden) refreshLiveStats(false);
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, [authed, autoRefresh, refreshLiveStats]);
 
   const run = async (fn: () => Promise<void>) => {
     if (busy) return;
@@ -886,13 +990,14 @@ export default function AttendantPanel() {
           team_id: a.team_id || null,
         })),
       });
-      const [totals] = await Promise.all([request("stats?period=" + period)]);
       applyServerSnapshot({
         batchSize: saved.batchSize,
         agents: saved.agents,
         teams: saved.teams,
       });
+      const [totals] = await Promise.all([request("stats?period=" + period)]);
       setStats(totals);
+      setLastStatsAt(Date.now());
       await verifyTeamsOnServer(saved.teams || []);
 
       const hasGeneralActive = (saved.agents || []).some((a: Agent) => a.active && !a.team_id);
@@ -1034,8 +1139,93 @@ export default function AttendantPanel() {
     </div>
   );
 
-  const renderAgentCard = (a: Agent, indexInColumn: number, columnLength: number) => {
+  const formattedLastSync = useMemo(() => {
+    if (!lastStatsAt) return "";
+    return new Intl.DateTimeFormat("pt-BR", {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    }).format(lastStatsAt);
+  }, [lastStatsAt]);
+
+  const renderLiveControls = () => (
+    <div className="panel-live-controls">
+      <button
+        type="button"
+        className="refresh-live-btn"
+        disabled={refreshingStats || busy}
+        onClick={() => refreshLiveStats(true)}
+        title="Atualizar contadores e quem está na vez agora"
+      >
+        {refreshingStats ? "Atualizando…" : "↻ Atualizar agora"}
+      </button>
+      <label className="live-toggle-label">
+        <input
+          type="checkbox"
+          checked={autoRefresh}
+          onChange={(e) => setAutoRefresh(e.target.checked)}
+        />
+        <span>Tempo real (5s)</span>
+      </label>
+      {formattedLastSync && (
+        <span className="live-updated-at">Atualizado às {formattedLastSync}</span>
+      )}
+    </div>
+  );
+
+  const renderColumnQueueStatus = (
+    queueInfo: QueuePreview | undefined,
+    isColumnUnsaved: boolean,
+  ) => {
+    if (!queueInfo || !queueInfo.receivingNow) return null;
+    const nowInfo = queueInfo.receivingNow;
+    const nextInfo = queueInfo.nextUp;
+    return (
+      <div className={`team-queue-live ${nowInfo.equalizing ? "is-equalizing" : ""}`}>
+        <div className="team-queue-row">
+          <span className={`queue-pill ${nowInfo.equalizing ? "equalizing" : "now"}`}>
+            {nowInfo.equalizing ? "⚡ Equalizando" : "● Chegando agora"}
+          </span>
+          <strong className="queue-agent-name">{nowInfo.name}</strong>
+          <span className="queue-today-chip">Hoje: {nowInfo.todayCount}</span>
+        </div>
+        <div className="team-queue-subrow">
+          <span>
+            {nowInfo.equalizing
+              ? `Faltam ${nowInfo.missingToEqualize} para igualar em ${queueInfo.maxToday} (lote ${nowInfo.usedInBatch}/${nowInfo.batchSize})`
+              : nowInfo.batchSize > 1
+              ? `Lote ${nowInfo.usedInBatch}/${nowInfo.batchSize} · faltam ${nowInfo.remainingToSwitch ?? nowInfo.batchSize} p/ trocar`
+              : "Rodízio 1 por vez"}
+          </span>
+          <span className="queue-next-label">
+            {nextInfo ? (
+              <>
+                Próximo: <strong>{nextInfo.name}</strong> (Hoje: {nextInfo.todayCount})
+              </>
+            ) : (
+              "Único ativo na fila"
+            )}
+          </span>
+        </div>
+        {(isColumnUnsaved || isDirty) && (
+          <div className="queue-unsaved-hint">
+            Prévia ao vivo do que está publicado online — salve se editou a ordem.
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderAgentCard = (
+    a: Agent,
+    indexInColumn: number,
+    columnLength: number,
+    queueInfo?: QueuePreview,
+  ) => {
     const counts = stats?.agents?.find((v: any) => v.id === a.id);
+    const todayTotal = counts?.today_deliveries ?? counts?.deliveries ?? 0;
+    const isReceivingNow = queueInfo?.receivingNow?.id === a.id;
+    const isNextUp = !isReceivingNow && queueInfo?.nextUp?.id === a.id;
     const isDragging = draggingAgentId === a.id;
     const isNewUnsaved = a.id.startsWith("temp-");
     const shareCount = phoneScopeCounts.get(a.phone) || 1;
@@ -1067,7 +1257,7 @@ export default function AttendantPanel() {
         onDragEnd={handleDragEnd}
         onDragOver={(e) => handleDragOverCard(e, a.id)}
         onDrop={(e) => handleDropOnCard(e, a.team_id || null, a.id)}
-        className={`team-agent-card ${isDragging ? "dragging" : ""} ${dropIndicator}`}
+        className={`team-agent-card ${isDragging ? "dragging" : ""} ${dropIndicator} ${isReceivingNow ? "is-receiving-now" : isNextUp ? "is-next-up" : ""}`}
         title="Arraste para cima/baixo para mudar a ordem ou arraste para outra equipe"
       >
         <div className="team-agent-top">
@@ -1082,6 +1272,20 @@ export default function AttendantPanel() {
             <div>
               <div className="team-agent-name">
                 {a.name}
+                {isReceivingNow && queueInfo?.receivingNow && (
+                  <span className={`queue-badge ${queueInfo.receivingNow.equalizing ? "equalizing" : "now"}`}>
+                    {queueInfo.receivingNow.equalizing
+                      ? `⚡ Equalizando (faltam ${queueInfo.receivingNow.missingToEqualize})`
+                      : queueInfo.batchSize > 1
+                      ? `● Chegando (${queueInfo.receivingNow.usedInBatch}/${queueInfo.batchSize})`
+                      : "● Chegando agora"}
+                  </span>
+                )}
+                {isNextUp && (
+                  <span className="queue-badge next">
+                    → Próximo
+                  </span>
+                )}
                 {shareCount > 1 && (
                   <span
                     className="shared-phone-badge"
@@ -1129,10 +1333,10 @@ export default function AttendantPanel() {
         </div>
 
         <div className="team-agent-meta">
-          <span>Link individual: <code>/atendimento{a.position}</code></span>
           <span>
-            {counts?.new_clients ?? 0} atend. · {counts?.deliveries ?? 0} encam.
+            Hoje: <strong>{todayTotal}</strong> · {counts?.new_clients ?? 0} atend. · {counts?.deliveries ?? 0} encam.
           </span>
+          <span>Link: <code>/atendimento{a.position}</code></span>
         </div>
 
         <div className="team-agent-controls">
@@ -1197,6 +1401,7 @@ export default function AttendantPanel() {
   const sortedAgents = sortAgentsByPosition(agents);
   const generalAgents = sortedAgents.filter((a) => !a.team_id);
   const generalActiveCount = generalAgents.filter((a) => a.active).length;
+  const generalQueue: QueuePreview | undefined = stats?.queues?.general;
 
   return (
     <main className="attendant-panel">
@@ -1209,7 +1414,7 @@ export default function AttendantPanel() {
             <h1>Painel de atendentes e equipes</h1>
             <p>Organize números por setor, arraste entre equipes e clique em Salvar alterações para publicar online</p>
           </div>
-          {token && (
+          {authed && (
             <div className="panel-header-actions">
               <button
                 type="button"
@@ -1226,7 +1431,10 @@ export default function AttendantPanel() {
                   run(async () => {
                     await request("logout", "POST", {});
                     setToken("");
+                    setAuthed(false);
                     setStats(null);
+                    setAgents([]);
+                    setTeams([]);
                     reset();
                     resetTeamForm();
                   })
@@ -1249,7 +1457,12 @@ export default function AttendantPanel() {
           </div>
         )}
 
-        {!token ? (
+        {!authChecked ? (
+          <div className="panel-card panel-login">
+            <h2>Verificando acesso…</h2>
+            <p>Conferindo se já existe sessão salva neste navegador.</p>
+          </div>
+        ) : !authed ? (
           <form
             className="panel-card panel-login"
             onSubmit={(e) => {
@@ -1257,14 +1470,24 @@ export default function AttendantPanel() {
               run(async () => {
                 const data = await api("login", "POST", { password });
                 setPassword("");
-                setToken(data.token);
+                tokenRef.current = data.token || "";
+                setToken(data.token || "");
+                setAuthed(true);
+                const [config, totals] = await Promise.all([
+                  api("admin/config", "GET", undefined, data.token || undefined),
+                  api("admin/stats?period=" + period, "GET", undefined, data.token || undefined),
+                ]);
+                applyServerSnapshot(config);
+                setStats(totals);
+                setLastStatsAt(Date.now());
+                verifyTeamsOnServer(config.teams || []).catch(() => {});
               });
             }}
           >
             <h2>Acesso restrito</h2>
             <p>
-              Informe a senha para entrar. Ela será solicitada novamente ao
-              abrir ou recarregar esta página.
+              Informe a senha para entrar. Sua sessão ficará salva neste navegador
+              até você clicar em Sair.
             </p>
             <label>
               Senha
@@ -1292,15 +1515,18 @@ export default function AttendantPanel() {
                   Atendimentos e encaminhamentos registrados por período
                 </p>
               </div>
-              <button
-                type="button"
-                className="danger"
-                disabled={busy}
-                onClick={clearHistory}
-                title="Zerar todos os registros e contadores"
-              >
-                Limpar histórico
-              </button>
+              <div style={{ display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap" }}>
+                {renderLiveControls()}
+                <button
+                  type="button"
+                  className="danger"
+                  disabled={busy}
+                  onClick={clearHistory}
+                  title="Zerar todos os registros e contadores"
+                >
+                  Limpar histórico
+                </button>
+              </div>
             </div>
             <div className="panel-metrics">
               {periods.map(([key, label]) => (
@@ -1393,6 +1619,7 @@ export default function AttendantPanel() {
                     Crie equipes com URLs próprias, use os mesmos números em mais de um link (clicando em <strong>Duplicar</strong> ou <strong>+ Copiar p/ equipe</strong>), arraste ou use <strong>↑ ↓</strong> para definir quem é <strong>1º, 2º, 3º…</strong> em cada URL e clique em <strong>Salvar alterações</strong>. <strong>Equalização automática (leitura do dia):</strong> mesmo em rodízio de 10 em 10, se você ativar ou adicionar um número com menos fichas hoje do que os outros, o sistema completa a diferença primeiro até igualar e depois retoma a ordem normal.
                   </p>
                 </div>
+                {renderLiveControls()}
               </div>
 
               {/* Criar / Editar Equipe */}
@@ -1550,6 +1777,8 @@ export default function AttendantPanel() {
                         </button>
                       </div>
                     </div>
+
+                    {renderColumnQueueStatus(generalQueue, false)}
                   </div>
 
                   <div className="team-agents-list">
@@ -1558,7 +1787,9 @@ export default function AttendantPanel() {
                         Arraste números para cá para fazê-los girar no Site Principal ({origin}/)
                       </div>
                     ) : (
-                      generalAgents.map((a, idx) => renderAgentCard(a, idx, generalAgents.length))
+                      generalAgents.map((a, idx) =>
+                        renderAgentCard(a, idx, generalAgents.length, generalQueue),
+                      )
                     )}
                   </div>
                 </div>
@@ -1756,6 +1987,11 @@ export default function AttendantPanel() {
                             </button>
                           </div>
                         </div>
+
+                        {renderColumnQueueStatus(
+                          stats?.queues?.teams?.[t.id] as QueuePreview | undefined,
+                          isTeamUnsaved,
+                        )}
                       </div>
 
                       <div className="team-agents-list">
@@ -1773,44 +2009,74 @@ export default function AttendantPanel() {
                               : `Arraste pelo menos 1 número para cá para ativar ${origin}/${t.slug}`}
                           </div>
                         ) : isMirrored ? (
-                          displayAgents.map((a, idx) => (
-                            <div
-                              key={`${t.id}-${a.id}`}
-                              className="team-agent-card is-mirrored-card"
-                            >
-                              <div className="team-agent-top">
-                                <div className="team-agent-info">
-                                  <span
-                                    className={`agent-order-badge ${idx === 0 ? "is-first" : ""}`}
-                                    title={`${idx + 1}º na fila espelhada`}
-                                  >
-                                    {idx + 1}º
-                                  </span>
-                                  <div>
-                                    <div className="team-agent-name">
-                                      {a.name}
-                                      <span className="mirror-sync-badge">
-                                        {syncMode === "general_reverse" ? "Espelho invertido" : "Espelho"}
-                                      </span>
+                          displayAgents.map((a, idx) => {
+                            const teamQueue = stats?.queues?.teams?.[t.id] as QueuePreview | undefined;
+                            const counts = stats?.agents?.find((v: any) => v.id === a.id);
+                            const todayTotal = counts?.today_deliveries ?? counts?.deliveries ?? 0;
+                            const isReceivingNow = teamQueue?.receivingNow?.id === a.id;
+                            const isNextUp = !isReceivingNow && teamQueue?.nextUp?.id === a.id;
+                            return (
+                              <div
+                                key={`${t.id}-${a.id}`}
+                                className={`team-agent-card is-mirrored-card ${isReceivingNow ? "is-receiving-now" : isNextUp ? "is-next-up" : ""}`}
+                              >
+                                <div className="team-agent-top">
+                                  <div className="team-agent-info">
+                                    <span
+                                      className={`agent-order-badge ${idx === 0 ? "is-first" : ""}`}
+                                      title={`${idx + 1}º na fila espelhada`}
+                                    >
+                                      {idx + 1}º
+                                    </span>
+                                    <div>
+                                      <div className="team-agent-name">
+                                        {a.name}
+                                        {isReceivingNow && teamQueue?.receivingNow && (
+                                          <span className={`queue-badge ${teamQueue.receivingNow.equalizing ? "equalizing" : "now"}`}>
+                                            {teamQueue.receivingNow.equalizing
+                                              ? `⚡ Equalizando (faltam ${teamQueue.receivingNow.missingToEqualize})`
+                                              : teamQueue.batchSize > 1
+                                              ? `● Chegando (${teamQueue.receivingNow.usedInBatch}/${teamQueue.batchSize})`
+                                              : "● Chegando agora"}
+                                          </span>
+                                        )}
+                                        {isNextUp && (
+                                          <span className="queue-badge next">
+                                            → Próximo
+                                          </span>
+                                        )}
+                                        <span className="mirror-sync-badge">
+                                          {syncMode === "general_reverse" ? "Espelho invertido" : "Espelho"}
+                                        </span>
+                                      </div>
+                                      <div className="team-agent-phone">{formatDisplayPhone(a.phone)}</div>
                                     </div>
-                                    <div className="team-agent-phone">{formatDisplayPhone(a.phone)}</div>
                                   </div>
+                                  <span
+                                    className={a.active ? "active" : "paused"}
+                                    style={{ fontSize: "11px", fontWeight: 700 }}
+                                  >
+                                    {a.active ? "Ativo" : "Pausado"}
+                                  </span>
                                 </div>
-                                <span
-                                  className={a.active ? "active" : "paused"}
-                                  style={{ fontSize: "11px", fontWeight: 700 }}
-                                >
-                                  {a.active ? "Ativo" : "Pausado"}
-                                </span>
+                                <div className="team-agent-meta">
+                                  <span>
+                                    Hoje: <strong>{todayTotal}</strong> · {counts?.new_clients ?? 0} atend. · {counts?.deliveries ?? 0} encam.
+                                  </span>
+                                  <span>Link direto: <code>/atendimento{a.position}</code></span>
+                                </div>
                               </div>
-                              <div className="team-agent-meta">
-                                <span>Controlado pelo Site Principal</span>
-                                <span>Link direto: <code>/atendimento{a.position}</code></span>
-                              </div>
-                            </div>
-                          ))
+                            );
+                          })
                         ) : (
-                          displayAgents.map((a, idx) => renderAgentCard(a, idx, displayAgents.length))
+                          displayAgents.map((a, idx) =>
+                            renderAgentCard(
+                              a,
+                              idx,
+                              displayAgents.length,
+                              stats?.queues?.teams?.[t.id] as QueuePreview | undefined,
+                            ),
+                          )
                         )}
                       </div>
                     </div>
@@ -1886,16 +2152,10 @@ export default function AttendantPanel() {
               <div className="panel-row">
                 <h2>Todos os atendentes e links individuais</h2>
                 <button
-                  disabled={busy}
-                  onClick={() =>
-                    run(async () => {
-                      const totals = await request("stats?period=" + period);
-                      setStats(totals);
-                      setNotice("Contadores atualizados.");
-                    })
-                  }
+                  disabled={busy || refreshingStats}
+                  onClick={() => refreshLiveStats(true)}
                 >
-                  Atualizar contadores
+                  {refreshingStats ? "Atualizando…" : "↻ Atualizar contadores"}
                 </button>
               </div>
               {!agents.length ? (

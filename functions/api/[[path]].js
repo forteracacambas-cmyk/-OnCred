@@ -473,14 +473,166 @@ async function equal(a, b) {
   for (let i = 0; i < x.length; i++) diff |= x.charCodeAt(i) ^ y.charCodeAt(i);
   return diff === 0;
 }
+const ADMIN_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const ADMIN_SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
+
 function cookie(request) {
   return request.headers
     .get("Cookie")
     ?.match(/(?:^|;\s*)oncred_visitor=([0-9a-f-]{36})(?:;|$)/i)?.[1];
 }
+function adminCookieToken(request) {
+  return request.headers
+    .get("Cookie")
+    ?.match(/(?:^|;\s*)oncred_admin=([0-9a-f-]{36,100})(?:;|$)/i)?.[1];
+}
 function visitorCookie(request, id) {
   const domain = ""; // Host-only cookie: isolated from SANTS and other Pages projects.
   return `oncred_visitor=${id}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000${domain}${new URL(request.url).protocol === "https:" ? "; Secure" : ""}`;
+}
+function adminCookie(request, token, maxAge = ADMIN_SESSION_TTL_SECONDS) {
+  const isHttps = new URL(request.url).protocol === "https:";
+  const flags = isHttps
+    ? "; HttpOnly; Secure; SameSite=None; Partitioned"
+    : "; HttpOnly; SameSite=Lax";
+  return `oncred_admin=${token}; Path=/api/admin; Max-Age=${maxAge}${flags}`;
+}
+
+export function computeQueuePreview({
+  pool,
+  batchSize,
+  cursorAgentId,
+  used,
+  reverse = false,
+  allAgentsInScope = [],
+  todayCounts = new Map(),
+}) {
+  const cleanBatch = Math.max(1, Number(batchSize) || 1);
+  const cleanUsed = Math.max(0, Number(used) || 0);
+  const sortedPool = [...pool].sort((a, b) =>
+    reverse
+      ? (b.position - a.position) || String(b.id).localeCompare(String(a.id))
+      : (a.position - b.position) || String(a.id).localeCompare(String(b.id)),
+  );
+  if (sortedPool.length === 0) {
+    return {
+      activeCount: 0,
+      batchSize: cleanBatch,
+      maxToday: 0,
+      receivingNow: null,
+      nextUp: null,
+    };
+  }
+
+  const counts = new Map();
+  let initialMaxToday = 0;
+  for (const a of sortedPool) {
+    const c = Number(todayCounts.get(a.id) || 0);
+    counts.set(a.id, c);
+    if (c > initialMaxToday) initialMaxToday = c;
+  }
+
+  const scopeById = new Map();
+  for (const a of allAgentsInScope) scopeById.set(a.id, a);
+  for (const a of sortedPool) scopeById.set(a.id, a);
+
+  const simulateOneStep = (curId, curUsed) => {
+    let minC = Infinity;
+    let maxC = -Infinity;
+    for (const a of sortedPool) {
+      const v = counts.get(a.id) || 0;
+      if (v < minC) minC = v;
+      if (v > maxC) maxC = v;
+    }
+    const allEqual = minC === maxC;
+    const activeCursor = curId ? sortedPool.find((a) => a.id === curId) : undefined;
+
+    if (curUsed < cleanBatch && activeCursor && !(curUsed > 0 && allEqual)) {
+      return {
+        selected: activeCursor,
+        nextCursor: activeCursor.id,
+        nextUsed: curUsed + 1,
+        inBatch: true,
+      };
+    }
+
+    const tied = sortedPool.filter((a) => (counts.get(a.id) || 0) === minC);
+    const cursorRef = curId ? scopeById.get(curId) : undefined;
+    let chosen = tied[0];
+    if (cursorRef) {
+      const after = tied.find((a) =>
+        reverse
+          ? a.position < cursorRef.position ||
+            (a.position === cursorRef.position &&
+              String(a.id) < String(cursorRef.id))
+          : a.position > cursorRef.position ||
+            (a.position === cursorRef.position &&
+              String(a.id) > String(cursorRef.id)),
+      );
+      if (after) chosen = after;
+    }
+    return {
+      selected: chosen,
+      nextCursor: chosen.id,
+      nextUsed: 1,
+      inBatch: false,
+    };
+  };
+
+  const firstStep = simulateOneStep(cursorAgentId || null, cleanUsed);
+  const firstAgent = firstStep.selected;
+  const initialFirstToday = counts.get(firstAgent.id) || 0;
+  const usedInBatch = firstStep.inBatch ? cleanUsed : 0;
+
+  let curId = firstStep.nextCursor;
+  let curUsed = firstStep.nextUsed;
+  counts.set(firstAgent.id, initialFirstToday + 1);
+  let consecutiveCount = 1;
+  let nextCandidate = null;
+
+  if (sortedPool.length > 1) {
+    const maxSimSteps = Math.max(cleanBatch, initialMaxToday - initialFirstToday + 1) + 5;
+    for (let step = 0; step < maxSimSteps && step < 2500; step++) {
+      const nextStep = simulateOneStep(curId, curUsed);
+      if (nextStep.selected.id !== firstAgent.id) {
+        nextCandidate = nextStep.selected;
+        break;
+      }
+      counts.set(firstAgent.id, (counts.get(firstAgent.id) || 0) + 1);
+      curId = nextStep.nextCursor;
+      curUsed = nextStep.nextUsed;
+      consecutiveCount++;
+    }
+  }
+
+  return {
+    activeCount: sortedPool.length,
+    batchSize: cleanBatch,
+    maxToday: initialMaxToday,
+    receivingNow: {
+      id: firstAgent.id,
+      name: firstAgent.name,
+      phone: firstAgent.phone,
+      todayCount: initialFirstToday,
+      usedInBatch,
+      batchSize: cleanBatch,
+      remainingToSwitch: sortedPool.length > 1 ? consecutiveCount : null,
+      equalizing: initialFirstToday < initialMaxToday,
+      missingToEqualize: Math.max(0, initialMaxToday - initialFirstToday),
+    },
+    nextUp: nextCandidate
+      ? {
+          id: nextCandidate.id,
+          name: nextCandidate.name,
+          todayCount: Number(todayCounts.get(nextCandidate.id) || 0),
+          equalizing: Number(todayCounts.get(nextCandidate.id) || 0) < initialMaxToday,
+          missingToEqualize: Math.max(
+            0,
+            initialMaxToday - Number(todayCounts.get(nextCandidate.id) || 0),
+          ),
+        }
+      : null,
+  };
 }
 async function body(request, maxBytes = 8192) {
   if (!request.headers.get("Content-Type")?.startsWith("application/json"))
@@ -756,33 +908,59 @@ async function handle({ request, env, params }) {
     )
       fail("Senha incorreta.", 401);
     const token = uuid() + uuid();
+    const expires = now + ADMIN_SESSION_TTL_MS;
     await db.batch([
       sql(
         "INSERT INTO sessions(token_hash,expires) VALUES(?,?)",
         await hash(token),
-        now + 1800000,
+        expires,
       ),
       sql("DELETE FROM sessions WHERE expires<?", now),
       sql("DELETE FROM login_limits WHERE expires<?", now),
     ]);
-    return json({ token, expires: now + 1800000 });
+    return json({ token, expires }, 200, {
+      "Set-Cookie": adminCookie(request, token),
+      Vary: "Cookie",
+    });
   }
   if (path.startsWith("/api/admin/")) {
     await ensureSchema(db);
-    const token = request.headers.get("Authorization")?.replace(/^Bearer /, "");
+    if (request.headers.get("Sec-Fetch-Site") === "cross-site")
+      fail("Origem não autorizada.", 403);
+    const bearerToken = request.headers.get("Authorization")?.replace(/^Bearer /, "");
+    const cookieToken = adminCookieToken(request);
+    const token = bearerToken || cookieToken;
     if (!token || token.length > 100) fail("Entre novamente no painel.", 401);
     const tokenHash = await hash(token);
-    if (
-      !(await sql(
-        "SELECT 1 FROM sessions WHERE token_hash=? AND expires>?",
+    const now = Date.now();
+    const sessionRow = await sql(
+      "SELECT expires FROM sessions WHERE token_hash=? AND expires>?",
+      tokenHash,
+      now,
+    ).first();
+    if (!sessionRow) fail("Sessão expirada. Entre novamente.", 401);
+
+    let slideCookieHeaders = {};
+    if (sessionRow.expires - now < ADMIN_SESSION_TTL_MS / 2) {
+      await sql(
+        "UPDATE sessions SET expires=? WHERE token_hash=?",
+        now + ADMIN_SESSION_TTL_MS,
         tokenHash,
-        Date.now(),
-      ).first())
-    )
-      fail("Sessão expirada. Entre novamente.", 401);
+      ).run();
+      if (cookieToken) {
+        slideCookieHeaders = {
+          "Set-Cookie": adminCookie(request, token),
+          Vary: "Cookie",
+        };
+      }
+    }
+
     if (path === "/api/admin/logout" && request.method === "POST") {
       await sql("DELETE FROM sessions WHERE token_hash=?", tokenHash).run();
-      return json({ ok: true });
+      return json({ ok: true }, 200, {
+        "Set-Cookie": adminCookie(request, "", 0),
+        Vary: "Cookie",
+      });
     }
     if (path === "/api/admin/clear-history" && request.method === "POST") {
       await db.batch([
@@ -802,11 +980,15 @@ async function handle({ request, env, params }) {
           "SELECT id,slug,name,batch_size,active,sync_mode,created_at FROM teams WHERE deleted=0 ORDER BY created_at,lower(name)",
         ),
       ]);
-      return json({
-        batchSize: res[0].results[0].batch_size,
-        agents: res[1].results,
-        teams: res[2].results,
-      });
+      return json(
+        {
+          batchSize: res[0].results[0].batch_size,
+          agents: res[1].results,
+          teams: res[2].results,
+        },
+        200,
+        slideCookieHeaders,
+      );
     }
     if (path === "/api/admin/config" && request.method === "PUT") {
       const data = await body(request);
@@ -1316,16 +1498,16 @@ async function handle({ request, env, params }) {
       return json({ ok: true });
     }
     if (path === "/api/admin/stats" && request.method === "GET") {
-      const now = Date.now(),
-        today = rangeStart(1, now),
+      const statsNow = Date.now(),
+        today = rangeStart(1, statsNow),
         yesterday = today - 86400000;
       const periods = [
-        ["today", today, now + 1],
+        ["today", today, statsNow + 1],
         ["yesterday", yesterday, today],
-        ["7", rangeStart(7, now), now + 1],
-        ["15", rangeStart(15, now), now + 1],
-        ["30", rangeStart(30, now), now + 1],
-        ["total", 0, now + 1],
+        ["7", rangeStart(7, statsNow), statsNow + 1],
+        ["15", rangeStart(15, statsNow), statsNow + 1],
+        ["30", rangeStart(30, statsNow), statsNow + 1],
+        ["total", 0, statsNow + 1],
       ];
       const selected = url.searchParams.get("period") || "today";
       const p = periods.find((x) => x[0] === selected);
@@ -1344,15 +1526,83 @@ async function handle({ request, env, params }) {
           p[2],
         ),
       );
-      const res = await db.batch(statements);
-      return json({
-        totals: Object.fromEntries(
-          periods.map((p, i) => [p[0], res[i].results[0].unique_clients]),
+      statements.push(
+        sql("SELECT batch_size, cursor_agent, used FROM settings WHERE id=1"),
+      );
+      statements.push(
+        sql(
+          "SELECT id, slug, name, batch_size, cursor_agent, used, active, sync_mode FROM teams WHERE deleted=0",
         ),
-        agents: res[6].results,
-        period: selected,
-        timeZone: "America/Sao_Paulo",
+      );
+      statements.push(
+        sql(
+          `SELECT a.id,a.name,a.phone,a.position,a.active,a.team_id,COUNT(d.id) AS today_deliveries FROM agents a LEFT JOIN deliveries d ON d.agent_id=a.id AND d.created_at>=? WHERE a.deleted=0 GROUP BY a.id ORDER BY a.position,a.id`,
+          today,
+        ),
+      );
+      const res = await db.batch(statements);
+      const settingsRow = res[7].results[0] || { batch_size: 1, cursor_agent: null, used: 0 };
+      const teamRows = res[8].results || [];
+      const liveAgents = res[9].results || [];
+
+      const todayMap = new Map();
+      for (const a of liveAgents) {
+        todayMap.set(a.id, Number(a.today_deliveries || 0));
+      }
+
+      const generalScope = liveAgents.filter((a) => !a.team_id);
+      const generalActivePool = generalScope.filter((a) => a.active);
+      const generalQueue = computeQueuePreview({
+        pool: generalActivePool,
+        batchSize: settingsRow.batch_size,
+        cursorAgentId: settingsRow.cursor_agent,
+        used: settingsRow.used,
+        reverse: false,
+        allAgentsInScope: generalScope,
+        todayCounts: todayMap,
       });
+
+      const teamQueues = {};
+      for (const t of teamRows) {
+        const sm = normalizeSyncMode(t.sync_mode);
+        const isMirrored = sm === "general_same" || sm === "general_reverse";
+        const scope = isMirrored
+          ? generalScope
+          : liveAgents.filter((a) => a.team_id === t.id);
+        const pool = !t.active ? [] : scope.filter((a) => a.active);
+        teamQueues[t.id] = computeQueuePreview({
+          pool,
+          batchSize: t.batch_size,
+          cursorAgentId: t.cursor_agent,
+          used: t.used,
+          reverse: sm === "general_reverse",
+          allAgentsInScope: scope,
+          todayCounts: todayMap,
+        });
+      }
+
+      const agentsWithToday = (res[6].results || []).map((a) => ({
+        ...a,
+        today_deliveries: todayMap.get(a.id) ?? 0,
+      }));
+
+      return json(
+        {
+          totals: Object.fromEntries(
+            periods.map((item, i) => [item[0], res[i].results[0].unique_clients]),
+          ),
+          agents: agentsWithToday,
+          queues: {
+            general: generalQueue,
+            teams: teamQueues,
+          },
+          period: selected,
+          timeZone: "America/Sao_Paulo",
+          generatedAt: statsNow,
+        },
+        200,
+        slideCookieHeaders,
+      );
     }
   }
   return json({ error: "Página não encontrada." }, 404);

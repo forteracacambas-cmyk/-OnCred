@@ -1059,6 +1059,129 @@ test("rodízio 10 em 10 completa diferença acima ou abaixo de 10 sem ultrapassa
   assert.equal(stats.agents.find((x) => x.id === carlos.id).deliveries, 25);
 });
 
+test("sessão persistente via cookie HttpOnly (30 dias), proteção cross-site e logout revogando cookie", async (t) => {
+  const { mf } = await setup(t);
+
+  // Login por HTTPS deve emitir cookie HttpOnly Secure SameSite=None Partitioned em /api/admin
+  const loginRes = await mf.dispatchFetch("https://zmscd.online/api/login", {
+    method: "POST",
+    headers: {
+      Origin: "https://zmscd.online",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ password: "test-only-password" }),
+  });
+  assert.equal(loginRes.status, 200);
+  const loginData = await loginRes.json();
+  assert.ok(loginData.expires - Date.now() > 29 * 86400 * 1000);
+  const setCookie = loginRes.headers.get("Set-Cookie") || "";
+  assert.match(setCookie, /^oncred_admin=[^;]+/);
+  assert.ok(setCookie.includes("Path=/api/admin"));
+  assert.ok(setCookie.includes("HttpOnly"));
+  assert.ok(setCookie.includes("Secure"));
+  assert.ok(setCookie.includes("SameSite=None"));
+  assert.ok(setCookie.includes("Partitioned"));
+  assert.ok(setCookie.includes("Max-Age=2592000"));
+  const adminCookiePair = setCookie.split(";")[0];
+
+  // Sem Bearer token, apenas com o cookie salvo, deve autenticar GET /api/admin/config e GET /api/admin/stats
+  const cfgRes = await mf.dispatchFetch("https://zmscd.online/api/admin/config", {
+    headers: { Cookie: adminCookiePair },
+  });
+  assert.equal(cfgRes.status, 200);
+
+  // Bloqueia requisição cross-site mesmo com cookie
+  const crossSiteRes = await mf.dispatchFetch("https://zmscd.online/api/admin/config", {
+    headers: { Cookie: adminCookiePair, "Sec-Fetch-Site": "cross-site" },
+  });
+  assert.equal(crossSiteRes.status, 403);
+
+  // Logout invalida sessão no banco e expira cookie (Max-Age=0)
+  const logoutRes = await mf.dispatchFetch("https://zmscd.online/api/admin/logout", {
+    method: "POST",
+    headers: {
+      Origin: "https://zmscd.online",
+      Cookie: adminCookiePair,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({}),
+  });
+  assert.equal(logoutRes.status, 200);
+  const logoutCookie = logoutRes.headers.get("Set-Cookie") || "";
+  assert.ok(logoutCookie.includes("Max-Age=0"));
+
+  // Reutilizar cookie após logout retorna 401
+  const afterLogoutRes = await mf.dispatchFetch("https://zmscd.online/api/admin/config", {
+    headers: { Cookie: adminCookiePair },
+  });
+  assert.equal(afterLogoutRes.status, 401);
+});
+
+test("/api/admin/stats retorna queues em tempo real (chegando agora, próximo, progresso 10 em 10, equalização e equipe3 invertida)", async (t) => {
+  const s = await setup(t);
+  await s.admin("config", "PUT", { batchSize: 10 });
+  const a1 = await s.add("Ana", "11999990001");
+  const a2 = await s.add("Bia", "11999990002");
+  const t3 = (
+    await s.admin("teams", "POST", {
+      name: "Equipe 3",
+      slug: "equipe3",
+      batchSize: 10,
+      syncMode: "general_reverse",
+    })
+  ).data.team;
+
+  // Inicial: todos com 0 hoje -> Geral: Ana (0/10, próximo Bia); Equipe 3: Bia (0/10, próximo Ana)
+  let st = (await s.admin("stats?period=today")).data;
+  assert.equal(st.queues.general.receivingNow.id, a1.id);
+  assert.equal(st.queues.general.receivingNow.usedInBatch, 0);
+  assert.equal(st.queues.general.receivingNow.remainingToSwitch, 10);
+  assert.equal(st.queues.general.receivingNow.equalizing, false);
+  assert.equal(st.queues.general.nextUp.id, a2.id);
+
+  assert.equal(st.queues.teams[t3.id].receivingNow.id, a2.id);
+  assert.equal(st.queues.teams[t3.id].nextUp.id, a1.id);
+
+  // Envia 4 clientes no Geral -> Ana 4/10, faltam 6, próximo Bia
+  for (let i = 0; i < 4; i++) {
+    const v = await s.visitor();
+    assert.equal((await s.route(v)).data.name, "Ana");
+  }
+  st = (await s.admin("stats?period=today")).data;
+  assert.equal(st.queues.general.receivingNow.id, a1.id);
+  assert.equal(st.queues.general.receivingNow.todayCount, 4);
+  assert.equal(st.queues.general.receivingNow.usedInBatch, 4);
+  assert.equal(st.queues.general.receivingNow.remainingToSwitch, 6);
+  assert.equal(st.queues.general.nextUp.id, a2.id);
+
+  // Completa os 10 de Ana -> agora quem está chegando no Geral passa a ser Bia (usedInBatch 0, faltam 10)
+  for (let i = 0; i < 6; i++) {
+    const v = await s.visitor();
+    assert.equal((await s.route(v)).data.name, "Ana");
+  }
+  st = (await s.admin("stats?period=today")).data;
+  assert.equal(st.queues.general.receivingNow.id, a2.id);
+  assert.equal(st.queues.general.receivingNow.usedInBatch, 0);
+  assert.equal(st.queues.general.receivingNow.remainingToSwitch, 10);
+  assert.equal(st.queues.general.receivingNow.equalizing, true);
+  assert.equal(st.queues.general.receivingNow.missingToEqualize, 10);
+  assert.equal(st.queues.general.nextUp.id, a1.id);
+
+  // Adiciona Carlos com 0 fichas enquanto Ana=10, Bia=0 -> primeiro menor ainda é Bia (pos 2), próximo é Carlos (pos 3)
+  const carlos = await s.add("Carlos", "11999990003");
+  st = (await s.admin("stats?period=today")).data;
+  assert.equal(st.queues.general.receivingNow.id, a2.id);
+  assert.equal(st.queues.general.receivingNow.equalizing, true);
+  assert.equal(st.queues.general.receivingNow.missingToEqualize, 10);
+  assert.equal(st.queues.general.nextUp.id, carlos.id);
+
+  // Na Equipe 3 (invertida), Carlos está no topo (0 fichas, falta 10 p/ igualar) e o próximo depois de igualar em 10 será Bia (0 fichas)!
+  assert.equal(st.queues.teams[t3.id].receivingNow.id, carlos.id);
+  assert.equal(st.queues.teams[t3.id].receivingNow.equalizing, true);
+  assert.equal(st.queues.teams[t3.id].receivingNow.missingToEqualize, 10);
+  assert.equal(st.queues.teams[t3.id].nextUp.id, a2.id);
+});
+
 
 
 

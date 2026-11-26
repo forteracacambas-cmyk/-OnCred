@@ -71,6 +71,7 @@ function devApiPlugin() {
     generalUsed: 0,
     dayKey: getSpDayKey(),
     devDeliveries: {} as Record<string, number>,
+    devSessions: [] as Array<{ token: string; expires: number }>,
   });
 
   const loadState = () => {
@@ -82,6 +83,7 @@ function devApiPlugin() {
             ...defaultState(),
             ...parsed,
             devDeliveries: parsed.devDeliveries && typeof parsed.devDeliveries === 'object' ? parsed.devDeliveries : {},
+            devSessions: Array.isArray(parsed.devSessions) ? parsed.devSessions : [],
           };
         }
       }
@@ -101,6 +103,120 @@ function devApiPlugin() {
     try {
       fs.writeFileSync(DEV_STATE_FILE, JSON.stringify(state, null, 2), 'utf8');
     } catch {}
+  };
+
+  const DEV_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+  const extractAdminCookie = (req: any) =>
+    String(req.headers?.cookie || '')
+      .match(/(?:^|;\s*)oncred_admin=([0-9a-f-]{16,120})(?:;|$)/i)?.[1] || '';
+
+  const computeDevQueuePreview = (
+    pool: any[],
+    batchSize: number,
+    cursorAgentId: string | null | undefined,
+    used: number,
+    reverse: boolean,
+    allAgentsInScope: any[],
+  ) => {
+    ensureTodayCounters();
+    const cleanBatch = Math.max(1, Number(batchSize) || 1);
+    const cleanUsed = Math.max(0, Number(used) || 0);
+    const sortedPool = [...pool].sort((a, b) =>
+      reverse
+        ? (b.position - a.position) || String(b.id).localeCompare(String(a.id))
+        : (a.position - b.position) || String(a.id).localeCompare(String(b.id)),
+    );
+    if (sortedPool.length === 0) {
+      return { activeCount: 0, batchSize: cleanBatch, maxToday: 0, receivingNow: null, nextUp: null };
+    }
+    const counts = new Map<string, number>();
+    let initialMaxToday = 0;
+    for (const a of sortedPool) {
+      const c = Number(state.devDeliveries[a.id] || 0);
+      counts.set(a.id, c);
+      if (c > initialMaxToday) initialMaxToday = c;
+    }
+    const scopeById = new Map<string, any>();
+    for (const a of allAgentsInScope) scopeById.set(a.id, a);
+    for (const a of sortedPool) scopeById.set(a.id, a);
+
+    const simulateOneStep = (curId: string | null | undefined, curUsed: number) => {
+      let minC = Infinity;
+      let maxC = -Infinity;
+      for (const a of sortedPool) {
+        const v = counts.get(a.id) || 0;
+        if (v < minC) minC = v;
+        if (v > maxC) maxC = v;
+      }
+      const allEqual = minC === maxC;
+      const activeCursor = curId ? sortedPool.find((a) => a.id === curId) : undefined;
+      if (curUsed < cleanBatch && activeCursor && !(curUsed > 0 && allEqual)) {
+        return { selected: activeCursor, nextCursor: activeCursor.id, nextUsed: curUsed + 1, inBatch: true };
+      }
+      const tied = sortedPool.filter((a) => (counts.get(a.id) || 0) === minC);
+      const cursorRef = curId ? scopeById.get(curId) : undefined;
+      let chosen = tied[0];
+      if (cursorRef) {
+        const after = tied.find((a) =>
+          reverse
+            ? a.position < cursorRef.position || (a.position === cursorRef.position && String(a.id) < String(cursorRef.id))
+            : a.position > cursorRef.position || (a.position === cursorRef.position && String(a.id) > String(cursorRef.id)),
+        );
+        if (after) chosen = after;
+      }
+      return { selected: chosen, nextCursor: chosen.id, nextUsed: 1, inBatch: false };
+    };
+
+    const firstStep = simulateOneStep(cursorAgentId || null, cleanUsed);
+    const firstAgent = firstStep.selected;
+    const initialFirstToday = counts.get(firstAgent.id) || 0;
+    const usedInBatch = firstStep.inBatch ? cleanUsed : 0;
+
+    let curId = firstStep.nextCursor;
+    let curUsed = firstStep.nextUsed;
+    counts.set(firstAgent.id, initialFirstToday + 1);
+    let consecutiveCount = 1;
+    let nextCandidate: any = null;
+    if (sortedPool.length > 1) {
+      const maxSimSteps = Math.max(cleanBatch, initialMaxToday - initialFirstToday + 1) + 5;
+      for (let step = 0; step < maxSimSteps && step < 2500; step++) {
+        const nextStep = simulateOneStep(curId, curUsed);
+        if (nextStep.selected.id !== firstAgent.id) {
+          nextCandidate = nextStep.selected;
+          break;
+        }
+        counts.set(firstAgent.id, (counts.get(firstAgent.id) || 0) + 1);
+        curId = nextStep.nextCursor;
+        curUsed = nextStep.nextUsed;
+        consecutiveCount++;
+      }
+    }
+
+    return {
+      activeCount: sortedPool.length,
+      batchSize: cleanBatch,
+      maxToday: initialMaxToday,
+      receivingNow: {
+        id: firstAgent.id,
+        name: firstAgent.name,
+        phone: firstAgent.phone,
+        todayCount: initialFirstToday,
+        usedInBatch,
+        batchSize: cleanBatch,
+        remainingToSwitch: sortedPool.length > 1 ? consecutiveCount : null,
+        equalizing: initialFirstToday < initialMaxToday,
+        missingToEqualize: Math.max(0, initialMaxToday - initialFirstToday),
+      },
+      nextUp: nextCandidate
+        ? {
+            id: nextCandidate.id,
+            name: nextCandidate.name,
+            todayCount: Number(state.devDeliveries[nextCandidate.id] || 0),
+            equalizing: Number(state.devDeliveries[nextCandidate.id] || 0) < initialMaxToday,
+            missingToEqualize: Math.max(0, initialMaxToday - Number(state.devDeliveries[nextCandidate.id] || 0)),
+          }
+        : null,
+    };
   };
 
   const selectEqualizedAgent = (
@@ -287,11 +403,43 @@ function devApiPlugin() {
         }
 
         if (pathname === '/api/login' && req.method === 'POST') {
-          res.end(JSON.stringify({ token: 'dev-token-admin', expires: Date.now() + 1800000 }));
+          const data = await readJson(req);
+          const expected = process.env.ADMIN_PASSWORD;
+          if (typeof data.password !== 'string' || !data.password || (expected && data.password !== expected)) {
+            res.statusCode = 401;
+            res.end(JSON.stringify({ error: 'Senha incorreta.' }));
+            return;
+          }
+          const token = crypto.randomUUID().replace(/-/g, '') + crypto.randomUUID().replace(/-/g, '');
+          const expires = Date.now() + DEV_SESSION_TTL_MS;
+          state.devSessions = (state.devSessions || []).filter((s: any) => s.expires > Date.now());
+          state.devSessions.push({ token, expires });
+          persistState();
+          res.setHeader('Set-Cookie', `oncred_admin=${token}; Path=/api/admin; HttpOnly; SameSite=Lax; Max-Age=${Math.floor(DEV_SESSION_TTL_MS / 1000)}`);
+          res.end(JSON.stringify({ token, expires }));
           return;
         }
 
+        if (pathname.startsWith('/api/admin/')) {
+          const bearer = String(req.headers?.authorization || '').replace(/^Bearer /, '');
+          const cookieToken = extractAdminCookie(req);
+          const tok = bearer || cookieToken;
+          const now = Date.now();
+          state.devSessions = (state.devSessions || []).filter((s: any) => s.expires > now);
+          const validSession = tok && state.devSessions.find((s: any) => s.token === tok);
+          if (!validSession) {
+            res.statusCode = 401;
+            res.end(JSON.stringify({ error: 'Entre novamente no painel.' }));
+            return;
+          }
+        }
+
         if (pathname === '/api/admin/logout' && req.method === 'POST') {
+          const bearer = String(req.headers?.authorization || '').replace(/^Bearer /, '');
+          const tok = bearer || extractAdminCookie(req);
+          state.devSessions = (state.devSessions || []).filter((s: any) => s.token !== tok);
+          persistState();
+          res.setHeader('Set-Cookie', 'oncred_admin=; Path=/api/admin; HttpOnly; SameSite=Lax; Max-Age=0');
           res.end(JSON.stringify({ ok: true }));
           return;
         }
@@ -654,13 +802,41 @@ function devApiPlugin() {
         if (pathname === '/api/admin/stats') {
           ensureTodayCounters();
           const totalToday = Object.values(state.devDeliveries).reduce((s: number, v: any) => s + Number(v || 0), 0);
+          const liveAgents = state.devAgents.filter((a: any) => !a.deleted);
+          const generalScope = liveAgents.filter((a: any) => !a.team_id);
+          const generalQueue = computeDevQueuePreview(
+            generalScope.filter((a: any) => a.active),
+            Number(state.batchSize || 1),
+            state.generalCursorAgent,
+            Number(state.generalUsed || 0),
+            false,
+            generalScope,
+          );
+          const teamQueues: Record<string, any> = {};
+          for (const t of state.devTeams.filter((x: any) => !x.deleted)) {
+            const sm = normalizeSync(t.sync_mode);
+            const isMirrored = sm === 'general_same' || sm === 'general_reverse';
+            const scope = isMirrored ? generalScope : liveAgents.filter((a: any) => a.team_id === t.id);
+            const pool = !t.active ? [] : scope.filter((a: any) => a.active);
+            teamQueues[t.id] = computeDevQueuePreview(
+              pool,
+              Number(t.batch_size || 1),
+              t.cursorAgent,
+              Number(t.used || 0),
+              sm === 'general_reverse',
+              scope,
+            );
+          }
           res.end(JSON.stringify({
             totals: { today: totalToday, yesterday: 0, '7': totalToday, '15': totalToday, '30': totalToday, total: totalToday },
             agents: state.devAgents.map((a: any) => {
               const cnt = Number(state.devDeliveries[a.id] || 0);
-              return { id: a.id, name: a.name, phone: a.phone, active: a.active, deleted: a.deleted, team_id: a.team_id, deliveries: cnt, new_clients: cnt };
+              return { id: a.id, name: a.name, phone: a.phone, active: a.active, deleted: a.deleted, team_id: a.team_id, deliveries: cnt, new_clients: cnt, today_deliveries: cnt };
             }),
-            period: 'today',
+            queues: { general: generalQueue, teams: teamQueues },
+            period: url.searchParams.get('period') || 'today',
+            timeZone: 'America/Sao_Paulo',
+            generatedAt: Date.now(),
           }));
           return;
         }
