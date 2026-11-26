@@ -50,16 +50,27 @@ function devApiPlugin() {
   const VALID_SYNC_MODES = new Set(['independent', 'general_same', 'general_reverse']);
   const normalizeSync = (v: any) => (VALID_SYNC_MODES.has(v) ? v : 'independent');
 
+  const getSpDayKey = () =>
+    new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/Sao_Paulo',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(Date.now());
+
   const defaultState = () => ({
     devTeams: [
-      { id: "11111111-1111-1111-1111-111111111111", slug: "equipe1", name: "Equipe 1", batch_size: 1, active: 1, sync_mode: "independent", deleted: 0, cursor: 0 },
+      { id: "11111111-1111-1111-1111-111111111111", slug: "equipe1", name: "Equipe 1", batch_size: 1, active: 1, sync_mode: "independent", deleted: 0, cursorAgent: null as string | null, used: 0 },
     ],
     devAgents: [
       { id: "22222222-2222-2222-2222-222222222201", name: "Atendente Comercial 1", phone: "551130420181", position: 1, active: 1, deleted: 0, team_id: null },
       { id: "22222222-2222-2222-2222-222222222202", name: "Atendente Comercial 2", phone: "551130420182", position: 2, active: 1, deleted: 0, team_id: "11111111-1111-1111-1111-111111111111" },
     ],
     batchSize: 1,
-    generalCursor: 0,
+    generalCursorAgent: null as string | null,
+    generalUsed: 0,
+    dayKey: getSpDayKey(),
+    devDeliveries: {} as Record<string, number>,
   });
 
   const loadState = () => {
@@ -67,7 +78,11 @@ function devApiPlugin() {
       if (fs.existsSync(DEV_STATE_FILE)) {
         const parsed = JSON.parse(fs.readFileSync(DEV_STATE_FILE, 'utf8'));
         if (parsed && Array.isArray(parsed.devTeams) && Array.isArray(parsed.devAgents)) {
-          return parsed;
+          return {
+            ...defaultState(),
+            ...parsed,
+            devDeliveries: parsed.devDeliveries && typeof parsed.devDeliveries === 'object' ? parsed.devDeliveries : {},
+          };
         }
       }
     } catch {}
@@ -75,10 +90,49 @@ function devApiPlugin() {
   };
 
   let state = loadState();
+  const ensureTodayCounters = () => {
+    const today = getSpDayKey();
+    if (state.dayKey !== today) {
+      state.dayKey = today;
+      state.devDeliveries = {};
+    }
+  };
   const persistState = () => {
     try {
       fs.writeFileSync(DEV_STATE_FILE, JSON.stringify(state, null, 2), 'utf8');
     } catch {}
+  };
+
+  const selectEqualizedAgent = (
+    pool: any[],
+    cursorId: string | null | undefined,
+    used: number,
+    batchSize: number,
+    reverse = false,
+  ) => {
+    ensureTodayCounters();
+    const sorted = [...pool].sort((a, b) =>
+      reverse
+        ? (b.position - a.position) || String(b.id).localeCompare(String(a.id))
+        : (a.position - b.position) || String(a.id).localeCompare(String(b.id)),
+    );
+    const activeCursor = cursorId ? sorted.find((a) => a.id === cursorId) : undefined;
+    if (used < batchSize && activeCursor) {
+      return { selected: activeCursor, nextCursor: activeCursor.id, nextUsed: used + 1 };
+    }
+    const minCount = Math.min(...sorted.map((a) => Number(state.devDeliveries[a.id] || 0)));
+    const tied = sorted.filter((a) => Number(state.devDeliveries[a.id] || 0) === minCount);
+    const cursorRef = cursorId ? state.devAgents.find((a: any) => a.id === cursorId) : undefined;
+    let chosen = tied[0];
+    if (cursorRef) {
+      const after = tied.find((a) =>
+        reverse
+          ? a.position < cursorRef.position || (a.position === cursorRef.position && String(a.id) < String(cursorRef.id))
+          : a.position > cursorRef.position || (a.position === cursorRef.position && String(a.id) > String(cursorRef.id)),
+      );
+      if (after) chosen = after;
+    }
+    return { selected: chosen, nextCursor: chosen.id, nextUsed: 1 };
   };
 
   const readJson = (req: any): Promise<any> =>
@@ -160,6 +214,9 @@ function devApiPlugin() {
               res.end(JSON.stringify({ error: "Atendente temporariamente indisponível." }));
               return;
             }
+            ensureTodayCounters();
+            state.devDeliveries[found.id] = (state.devDeliveries[found.id] || 0) + 1;
+            persistState();
             selected = found;
           } else if (specificTeam) {
             teamObj = state.devTeams.find((t: any) => !t.deleted && (t.id === specificTeam || t.slug.toLowerCase() === specificTeam.toLowerCase()));
@@ -174,27 +231,26 @@ function devApiPlugin() {
               return;
             }
             const syncMode = normalizeSync(teamObj.sync_mode);
-            let pool: any[] = [];
-            if (syncMode === 'general_reverse') {
-              pool = [...state.devAgents]
-                .filter((a: any) => !a.deleted && a.active && !a.team_id)
-                .sort((a: any, b: any) => (b.position - a.position) || String(b.id).localeCompare(String(a.id)));
-            } else if (syncMode === 'general_same') {
-              pool = [...state.devAgents]
-                .filter((a: any) => !a.deleted && a.active && !a.team_id)
-                .sort((a: any, b: any) => (a.position - b.position) || String(a.id).localeCompare(String(b.id)));
-            } else {
-              pool = [...state.devAgents]
-                .filter((a: any) => !a.deleted && a.active && a.team_id === teamObj.id)
-                .sort((a: any, b: any) => (a.position - b.position) || String(a.id).localeCompare(String(b.id)));
-            }
+            const pool =
+              syncMode === 'general_reverse' || syncMode === 'general_same'
+                ? state.devAgents.filter((a: any) => !a.deleted && a.active && !a.team_id)
+                : state.devAgents.filter((a: any) => !a.deleted && a.active && a.team_id === teamObj.id);
             if (!pool.length) {
               res.statusCode = 503;
               res.end(JSON.stringify({ error: `Nenhum atendente disponível na equipe ${teamObj.name} no momento.` }));
               return;
             }
-            selected = pool[(teamObj.cursor || 0) % pool.length];
-            teamObj.cursor = (teamObj.cursor || 0) + 1;
+            const pick = selectEqualizedAgent(
+              pool,
+              teamObj.cursorAgent,
+              Number(teamObj.used || 0),
+              Number(teamObj.batch_size || 1),
+              syncMode === 'general_reverse',
+            );
+            selected = pick.selected;
+            teamObj.cursorAgent = pick.nextCursor;
+            teamObj.used = pick.nextUsed;
+            state.devDeliveries[selected.id] = (state.devDeliveries[selected.id] || 0) + 1;
             persistState();
           } else {
             const pool = state.devAgents.filter((a: any) => !a.deleted && a.active && !a.team_id);
@@ -203,8 +259,17 @@ function devApiPlugin() {
               res.end(JSON.stringify({ error: "Nenhum atendente disponível no momento." }));
               return;
             }
-            selected = pool[(state.generalCursor || 0) % pool.length];
-            state.generalCursor = (state.generalCursor || 0) + 1;
+            const pick = selectEqualizedAgent(
+              pool,
+              state.generalCursorAgent,
+              Number(state.generalUsed || 0),
+              Number(state.batchSize || 1),
+              false,
+            );
+            selected = pick.selected;
+            state.generalCursorAgent = pick.nextCursor;
+            state.generalUsed = pick.nextUsed;
+            state.devDeliveries[selected.id] = (state.devDeliveries[selected.id] || 0) + 1;
             persistState();
           }
 
@@ -230,8 +295,10 @@ function devApiPlugin() {
         }
 
         if (pathname === '/api/admin/clear-history' && req.method === 'POST') {
-          state.generalCursor = 0;
-          state.devTeams.forEach((t: any) => { t.cursor = 0; });
+          state.generalCursorAgent = null;
+          state.generalUsed = 0;
+          state.devDeliveries = {};
+          state.devTeams.forEach((t: any) => { t.cursorAgent = null; t.used = 0; });
           persistState();
           res.end(JSON.stringify({ ok: true }));
           return;
@@ -306,7 +373,8 @@ function devApiPlugin() {
               active: rawT.active === false || rawT.active === 0 ? 0 : 1,
               sync_mode: normalizeSync(rawT.sync_mode),
               deleted: 0,
-              cursor: existing?.cursor || 0,
+              cursorAgent: existing?.cursorAgent ?? null,
+              used: Number(existing?.used || 0),
             });
           }
 
@@ -356,7 +424,8 @@ function devApiPlugin() {
           const afterOrder = buildDevOrder(newAgents);
           const generalChanged = (beforeOrder.get('__general__') || '') !== (afterOrder.get('__general__') || '');
           if (generalChanged) {
-            state.generalCursor = 0;
+            state.generalCursorAgent = null;
+            state.generalUsed = 0;
           }
           for (const t of newTeams) {
             const prevT = state.devTeams.find((x: any) => x.id === t.id);
@@ -365,7 +434,8 @@ function devApiPlugin() {
               normalizeSync(prevT?.sync_mode) !== t.sync_mode ||
               (isMirrored ? generalChanged : (beforeOrder.get(t.id) || '') !== (afterOrder.get(t.id) || ''))
             ) {
-              t.cursor = 0;
+              t.cursorAgent = null;
+              t.used = 0;
             }
           }
 
@@ -403,7 +473,8 @@ function devApiPlugin() {
             active: 1,
             sync_mode: normalizeSync(data.syncMode || data.sync_mode),
             deleted: 0,
-            cursor: 0,
+            cursorAgent: null,
+            used: 0,
           };
           state.devTeams.push(team);
           persistState();
@@ -546,9 +617,14 @@ function devApiPlugin() {
         }
 
         if (pathname === '/api/admin/stats') {
+          ensureTodayCounters();
+          const totalToday = Object.values(state.devDeliveries).reduce((s: number, v: any) => s + Number(v || 0), 0);
           res.end(JSON.stringify({
-            totals: { today: 12, yesterday: 8, '7': 45, '15': 89, '30': 150, total: 320 },
-            agents: state.devAgents.map((a: any) => ({ id: a.id, name: a.name, phone: a.phone, active: a.active, deleted: a.deleted, team_id: a.team_id, deliveries: 15, new_clients: 12 })),
+            totals: { today: totalToday, yesterday: 0, '7': totalToday, '15': totalToday, '30': totalToday, total: totalToday },
+            agents: state.devAgents.map((a: any) => {
+              const cnt = Number(state.devDeliveries[a.id] || 0);
+              return { id: a.id, name: a.name, phone: a.phone, active: a.active, deleted: a.deleted, team_id: a.team_id, deliveries: cnt, new_clients: cnt };
+            }),
             period: 'today',
           }));
           return;

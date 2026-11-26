@@ -80,11 +80,27 @@ BEGIN
    WHEN used<batch_size AND EXISTS(SELECT 1 FROM agents WHERE id=cursor_agent AND active=1 AND deleted=0 AND team_id IS NULL)
    THEN cursor_agent
    ELSE COALESCE(
-    (SELECT a.id FROM agents a WHERE a.active=1 AND a.deleted=0 AND a.team_id IS NULL AND
-     (a.position>COALESCE((SELECT position FROM agents WHERE id=cursor_agent AND team_id IS NULL),-1)
-      OR (a.position=(SELECT position FROM agents WHERE id=cursor_agent AND team_id IS NULL) AND a.id>cursor_agent))
-     ORDER BY a.position,a.id LIMIT 1),
-    (SELECT id FROM agents WHERE active=1 AND deleted=0 AND team_id IS NULL ORDER BY position,id LIMIT 1))
+    (SELECT a.id FROM agents a
+     WHERE a.active=1 AND a.deleted=0 AND a.team_id IS NULL
+      AND NOT EXISTS(
+       SELECT 1 FROM agents b
+       WHERE b.active=1 AND b.deleted=0 AND b.team_id IS NULL
+        AND (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=b.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
+          < (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=a.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
+      )
+      AND (a.position>COALESCE((SELECT position FROM agents WHERE id=cursor_agent AND team_id IS NULL),-1)
+       OR (a.position=(SELECT position FROM agents WHERE id=cursor_agent AND team_id IS NULL) AND a.id>cursor_agent))
+     ORDER BY a.position ASC,a.id ASC LIMIT 1),
+    (SELECT a.id FROM agents a
+     WHERE a.active=1 AND a.deleted=0 AND a.team_id IS NULL
+      AND NOT EXISTS(
+       SELECT 1 FROM agents b
+       WHERE b.active=1 AND b.deleted=0 AND b.team_id IS NULL
+        AND (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=b.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
+          < (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=a.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
+      )
+     ORDER BY a.position ASC,a.id ASC LIMIT 1)
+   )
   END,
   used=CASE
    WHEN used<batch_size AND EXISTS(SELECT 1 FROM agents WHERE id=cursor_agent AND active=1 AND deleted=0 AND team_id IS NULL)
@@ -102,30 +118,80 @@ BEGIN
      THEN cursor_agent
      WHEN sync_mode='general_reverse' THEN
       COALESCE(
-       (SELECT a.id FROM agents a WHERE a.active=1 AND a.deleted=0 AND a.team_id IS NULL AND (
-         (SELECT position FROM agents WHERE id=cursor_agent AND team_id IS NULL) IS NULL
-         OR a.position<(SELECT position FROM agents WHERE id=cursor_agent AND team_id IS NULL)
-         OR (a.position=(SELECT position FROM agents WHERE id=cursor_agent AND team_id IS NULL) AND a.id<cursor_agent)
-       ) ORDER BY a.position DESC,a.id DESC LIMIT 1),
-       (SELECT id FROM agents WHERE active=1 AND deleted=0 AND team_id IS NULL ORDER BY position DESC,id DESC LIMIT 1))
+       (SELECT a.id FROM agents a
+        WHERE a.active=1 AND a.deleted=0 AND a.team_id IS NULL
+         AND NOT EXISTS(
+          SELECT 1 FROM agents b
+          WHERE b.active=1 AND b.deleted=0 AND b.team_id IS NULL
+           AND (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=b.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
+             < (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=a.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
+         )
+         AND (
+          (SELECT position FROM agents WHERE id=cursor_agent AND team_id IS NULL) IS NULL
+          OR a.position<(SELECT position FROM agents WHERE id=cursor_agent AND team_id IS NULL)
+          OR (a.position=(SELECT position FROM agents WHERE id=cursor_agent AND team_id IS NULL) AND a.id<cursor_agent)
+         )
+        ORDER BY a.position DESC,a.id DESC LIMIT 1),
+       (SELECT a.id FROM agents a
+        WHERE a.active=1 AND a.deleted=0 AND a.team_id IS NULL
+         AND NOT EXISTS(
+          SELECT 1 FROM agents b
+          WHERE b.active=1 AND b.deleted=0 AND b.team_id IS NULL
+           AND (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=b.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
+             < (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=a.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
+         )
+        ORDER BY a.position DESC,a.id DESC LIMIT 1)
+      )
      ELSE
       COALESCE(
-       (SELECT a.id FROM agents a WHERE a.active=1 AND a.deleted=0 AND a.team_id IS NULL AND
-        (a.position>COALESCE((SELECT position FROM agents WHERE id=cursor_agent AND team_id IS NULL),-1)
-         OR (a.position=(SELECT position FROM agents WHERE id=cursor_agent AND team_id IS NULL) AND a.id>cursor_agent))
-        ORDER BY a.position,a.id LIMIT 1),
-       (SELECT id FROM agents WHERE active=1 AND deleted=0 AND team_id IS NULL ORDER BY position,id LIMIT 1))
+       (SELECT a.id FROM agents a
+        WHERE a.active=1 AND a.deleted=0 AND a.team_id IS NULL
+         AND NOT EXISTS(
+          SELECT 1 FROM agents b
+          WHERE b.active=1 AND b.deleted=0 AND b.team_id IS NULL
+           AND (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=b.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
+             < (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=a.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
+         )
+         AND (a.position>COALESCE((SELECT position FROM agents WHERE id=cursor_agent AND team_id IS NULL),-1)
+          OR (a.position=(SELECT position FROM agents WHERE id=cursor_agent AND team_id IS NULL) AND a.id>cursor_agent))
+        ORDER BY a.position ASC,a.id ASC LIMIT 1),
+       (SELECT a.id FROM agents a
+        WHERE a.active=1 AND a.deleted=0 AND a.team_id IS NULL
+         AND NOT EXISTS(
+          SELECT 1 FROM agents b
+          WHERE b.active=1 AND b.deleted=0 AND b.team_id IS NULL
+           AND (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=b.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
+             < (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=a.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
+         )
+        ORDER BY a.position ASC,a.id ASC LIMIT 1)
+      )
     END
    ELSE
     CASE
      WHEN used<batch_size AND EXISTS(SELECT 1 FROM agents WHERE id=cursor_agent AND active=1 AND deleted=0 AND team_id=NEW.team_id)
      THEN cursor_agent
      ELSE COALESCE(
-      (SELECT a.id FROM agents a WHERE a.active=1 AND a.deleted=0 AND a.team_id=NEW.team_id AND
-       (a.position>COALESCE((SELECT position FROM agents WHERE id=cursor_agent AND team_id=NEW.team_id),-1)
-        OR (a.position=(SELECT position FROM agents WHERE id=cursor_agent AND team_id=NEW.team_id) AND a.id>cursor_agent))
-       ORDER BY a.position,a.id LIMIT 1),
-      (SELECT id FROM agents WHERE active=1 AND deleted=0 AND team_id=NEW.team_id ORDER BY position,id LIMIT 1))
+      (SELECT a.id FROM agents a
+       WHERE a.active=1 AND a.deleted=0 AND a.team_id=NEW.team_id
+        AND NOT EXISTS(
+         SELECT 1 FROM agents b
+         WHERE b.active=1 AND b.deleted=0 AND b.team_id=NEW.team_id
+          AND (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=b.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
+            < (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=a.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
+        )
+        AND (a.position>COALESCE((SELECT position FROM agents WHERE id=cursor_agent AND team_id=NEW.team_id),-1)
+         OR (a.position=(SELECT position FROM agents WHERE id=cursor_agent AND team_id=NEW.team_id) AND a.id>cursor_agent))
+       ORDER BY a.position ASC,a.id ASC LIMIT 1),
+      (SELECT a.id FROM agents a
+       WHERE a.active=1 AND a.deleted=0 AND a.team_id=NEW.team_id
+        AND NOT EXISTS(
+         SELECT 1 FROM agents b
+         WHERE b.active=1 AND b.deleted=0 AND b.team_id=NEW.team_id
+          AND (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=b.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
+            < (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=a.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
+        )
+       ORDER BY a.position ASC,a.id ASC LIMIT 1)
+     )
     END
   END,
   used=CASE
@@ -185,11 +251,18 @@ async function ensureSchema(db) {
   let hasSyncModeCol = false;
   let triggersReady = false;
   let phoneIdxReady = false;
+  let deliveriesIdxReady = false;
 
   try {
     hasTeams = !!(await db
       .prepare(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='teams'",
+      )
+      .first());
+
+    deliveriesIdxReady = !!(await db
+      .prepare(
+        "SELECT 1 FROM sqlite_master WHERE type='index' AND name='deliveries_agent_date'",
       )
       .first());
 
@@ -215,13 +288,17 @@ async function ensureSchema(db) {
         )
         .all();
       const rows = tr.results || [];
+      const availRow = rows.find((r) => r.name === "route_available");
+      const assignRow = rows.find((r) => r.name === "route_assign");
       triggersReady =
-        rows.length === 2 &&
-        rows.every(
-          (r) =>
-            String(r.sql || "").includes("team_id") &&
-            String(r.sql || "").includes("sync_mode"),
-        );
+        !!availRow &&
+        !!assignRow &&
+        String(availRow.sql || "").includes("team_id") &&
+        String(availRow.sql || "").includes("sync_mode") &&
+        String(assignRow.sql || "").includes("team_id") &&
+        String(assignRow.sql || "").includes("sync_mode") &&
+        String(assignRow.sql || "").includes("10800000") &&
+        String(assignRow.sql || "").includes("deliveries d WHERE d.agent_id=b.id");
 
       const phoneIdx = await db
         .prepare(
@@ -241,7 +318,8 @@ async function ensureSchema(db) {
     hasAgentTeamCol &&
     hasReqTeamCol &&
     triggersReady &&
-    phoneIdxReady
+    phoneIdxReady &&
+    deliveriesIdxReady
   )
     return;
 
@@ -307,6 +385,14 @@ async function ensureSchema(db) {
       "CREATE INDEX IF NOT EXISTS agents_team ON agents(team_id, active, deleted, position)",
     )
     .run();
+
+  if (!deliveriesIdxReady) {
+    await db
+      .prepare(
+        "CREATE INDEX IF NOT EXISTS deliveries_agent_date ON deliveries(agent_id, created_at)",
+      )
+      .run();
+  }
 
   if (!hasReqTeamCol) {
     try {

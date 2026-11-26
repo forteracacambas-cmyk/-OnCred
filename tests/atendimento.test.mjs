@@ -20,7 +20,9 @@ const schema = (
   "\n" +
   (await readFile("migrations/0003_multi_equipe_phone.sql", "utf8")) +
   "\n" +
-  (await readFile("migrations/0004_team_sync_mode.sql", "utf8"))
+  (await readFile("migrations/0004_team_sync_mode.sql", "utf8")) +
+  "\n" +
+  (await readFile("migrations/0005_equalize_distribution.sql", "utf8"))
 ).replace(/--[^\n]*/g, "");
 const legacySchema = (
   await readFile("migrations/0001_atendimento.sql", "utf8")
@@ -855,6 +857,147 @@ test("banco existente (0001+0002+0003) com equipe3 já criada migra automaticame
   assert.equal(r.status, 200);
   assert.equal(r.data.name, "Ultimo");
 });
+
+test("equalização preenche atendente ativado/adicionado com menos fichas hoje até igualar e depois retoma a ordem", async (t) => {
+  const s = await setup(t);
+  const a = await s.add("Ana", "11999990001");
+  const b = await s.add("Bia", "11999990002");
+
+  // Ana e Bia recebem 10 fichas cada uma hoje
+  for (let i = 0; i < 20; i++) {
+    const c = await s.visitor();
+    const r = await s.route(c);
+    assert.equal(r.status, 200);
+    assert.equal(r.data.name, i % 2 === 0 ? "Ana" : "Bia");
+  }
+
+  // Admin adiciona/ativa Carlos agora (com 0 fichas hoje)
+  const carlos = await s.add("Carlos", "11999990003");
+  assert.ok(carlos.id);
+
+  // Próximas 10 fichas preenchem Carlos primeiro até ficar igual (10 = 10 = 10)
+  for (let i = 0; i < 10; i++) {
+    const c = await s.visitor();
+    const r = await s.route(c);
+    assert.equal(r.status, 200);
+    assert.equal(r.data.name, "Carlos");
+  }
+
+  // Agora todos estão iguais com 10 -> retoma a ordem normal Ana -> Bia -> Carlos
+  const nextOrder = [];
+  for (let i = 0; i < 3; i++) {
+    const c = await s.visitor();
+    nextOrder.push((await s.route(c)).data.name);
+  }
+  assert.deepEqual(nextOrder, ["Ana", "Bia", "Carlos"]);
+
+  // Pausa Bia com 11 fichas enquanto Ana e Carlos chegam em 14, depois reativa Bia
+  await s.admin("agents/" + b.id, "PUT", { ...b, active: false });
+  for (let i = 0; i < 6; i++) {
+    const c = await s.visitor();
+    await s.route(c);
+  }
+  await s.admin("agents/" + b.id, "PUT", { ...b, active: true });
+
+  // Bia está com 11 e Ana/Carlos com 14 -> próximas 3 fichas preenchem Bia até 14
+  for (let i = 0; i < 3; i++) {
+    const c = await s.visitor();
+    assert.equal((await s.route(c)).data.name, "Bia");
+  }
+
+  // Estatísticas confirmam todos exatamente empatados em 14 fichas hoje
+  const stats = (await s.admin("stats?period=today")).data;
+  assert.equal(stats.agents.find((x) => x.id === a.id).deliveries, 14);
+  assert.equal(stats.agents.find((x) => x.id === b.id).deliveries, 14);
+  assert.equal(stats.agents.find((x) => x.id === carlos.id).deliveries, 14);
+});
+
+test("sistema unificado entre Site Principal (cima pra baixo) e Equipe 3 (baixo pra cima) equaliza fichas", async (t) => {
+  const s = await setup(t);
+  const init = await s.admin("save", "POST", {
+    batchSize: 1,
+    teams: [
+      { id: "temp-e3", name: "Equipe 3", slug: "equipe3", batch_size: 1, active: true, sync_mode: "general_reverse" },
+    ],
+    agents: [
+      { id: "temp-a", name: "Ana", phone: "11911110001", position: 1, active: true, team_id: null },
+      { id: "temp-b", name: "Bia", phone: "11911110002", position: 2, active: true, team_id: null },
+      { id: "temp-c", name: "Carlos", phone: "11911110003", position: 3, active: false, team_id: null },
+    ],
+  });
+  assert.equal(init.status, 200);
+
+  const routeScope = async (teamSlug) => {
+    const c = await s.visitor();
+    return s.call("route", {
+      method: "POST",
+      cookie: c,
+      body: { analytics: true, handoffId: crypto.randomUUID(), ...(teamSlug ? { team: teamSlug } : {}) },
+    });
+  };
+
+  // Ana e Bia recebem 6 fichas cada: Site Principal alterna Ana->Bia e Equipe 3 alterna Bia->Ana enquanto Carlos está pausado
+  for (let i = 0; i < 6; i++) {
+    assert.equal((await routeScope(null)).data.name, i % 2 === 0 ? "Ana" : "Bia");
+    assert.equal((await routeScope("equipe3")).data.name, i % 2 === 0 ? "Bia" : "Ana");
+  }
+
+  // Agora reativa Carlos (com 0 fichas hoje)
+  const carlosReactivated = init.data.agents.map((a) =>
+    a.name === "Carlos" ? { ...a, active: true } : a,
+  );
+  assert.equal(
+    (await s.admin("save", "POST", { batchSize: 1, teams: init.data.teams, agents: carlosReactivated })).status,
+    200,
+  );
+
+  // Tanto chamadas no Site Principal quanto na Equipe 3 preenchem Carlos primeiro até empatar em 6
+  for (let i = 0; i < 6; i++) {
+    const slug = i % 2 === 0 ? null : "equipe3";
+    assert.equal((await routeScope(slug)).data.name, "Carlos");
+  }
+
+  // Igualados em 6: Site Principal segue de cima pra baixo (Ana=7), Equipe 3 passa para Bia (7) e depois Carlos (7)
+  assert.equal((await routeScope(null)).data.name, "Ana");
+  assert.equal((await routeScope("equipe3")).data.name, "Bia");
+  assert.equal((await routeScope("equipe3")).data.name, "Carlos");
+
+  const stats = (await s.admin("stats?period=today")).data;
+  assert.deepEqual(
+    stats.agents.map((x) => x.deliveries),
+    [7, 7, 7],
+  );
+});
+
+test("banco existente (0001..0004) atualiza triggers via ensureSchema para aplicar equalização", async (t) => {
+  const preEqSchema = (
+    (await readFile("migrations/0001_atendimento.sql", "utf8")) +
+    "\n" +
+    (await readFile("migrations/0002_equipes.sql", "utf8")) +
+    "\n" +
+    (await readFile("migrations/0003_multi_equipe_phone.sql", "utf8")) +
+    "\n" +
+    (await readFile("migrations/0004_team_sync_mode.sql", "utf8"))
+  ).replace(/--[^\n]*/g, "");
+  const s = await setup(t, preEqSchema);
+  const a1 = await s.add("Ana", "11999990001");
+  const a2 = await s.add("Bia", "11999990002");
+
+  // Simula 5 fichas antigas de hoje para Ana e 0 para Bia usando entrega direta no banco
+  const now = Date.now();
+  for (let i = 0; i < 5; i++) {
+    const vid = crypto.randomUUID();
+    await s.db.prepare("INSERT INTO visitors(id,event_id,agent_id,created_at) VALUES(?,?,?,?)").bind(vid, crypto.randomUUID(), a1.id, now).run();
+    await s.db.prepare("INSERT INTO deliveries(id,visitor_id,agent_id,created_at,first_delivery) VALUES(?,?,?,?,1)").bind(crypto.randomUUID(), vid, a1.id, now).run();
+  }
+
+  // Chamada pública aciona ensureSchema (atualiza route_assign e cria índice) e envia para Bia (0 < 5)
+  const c = await s.visitor();
+  const r = await s.route(c);
+  assert.equal(r.status, 200);
+  assert.equal(r.data.id ?? r.data.name, a2.name);
+});
+
 
 
 
