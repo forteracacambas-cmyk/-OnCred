@@ -998,6 +998,68 @@ test("banco existente (0001..0004) atualiza triggers via ensureSchema para aplic
   assert.equal(r.data.id ?? r.data.name, a2.name);
 });
 
+test("rodízio 10 em 10 completa diferença acima ou abaixo de 10 sem ultrapassar e retoma 10 em 10", async (t) => {
+  const s = await setup(t);
+  await s.admin("config", "PUT", { batchSize: 10 });
+  const a1 = await s.add("Ana", "11999990001");
+  const a2 = await s.add("Bia", "11999990002");
+
+  // Simula Ana=15 e Bia=15 hoje no banco (passou de 10) + Equipe 3 espelhada (de trás pra frente, lote 10)
+  await s.admin("teams", "POST", {
+    name: "Equipe 3",
+    slug: "equipe3",
+    batchSize: 10,
+    syncMode: "general_reverse",
+  });
+  const now = Date.now();
+  for (const agent of [a1, a2]) {
+    for (let i = 0; i < 15; i++) {
+      const vid = crypto.randomUUID();
+      await s.db.prepare("INSERT INTO visitors(id,event_id,agent_id,created_at) VALUES(?,?,?,?)").bind(vid, crypto.randomUUID(), agent.id, now).run();
+      await s.db.prepare("INSERT INTO deliveries(id,visitor_id,agent_id,created_at,first_delivery) VALUES(?,?,?,?,1)").bind(crypto.randomUUID(), vid, agent.id, now).run();
+    }
+  }
+
+  // Adiciona Carlos com 0 fichas hoje (diferença de 15 > 10)
+  const carlos = await s.add("Carlos", "11999990003");
+  const routeScope = async (teamSlug) => {
+    const c = await s.visitor();
+    return s.call("route", {
+      method: "POST",
+      cookie: c,
+      body: { analytics: true, handoffId: crypto.randomUUID(), ...(teamSlug ? { team: teamSlug } : {}) },
+    });
+  };
+
+  // Primeiras 15 fichas (misturando Site Principal e Equipe 3) preenchem Carlos até completar 15 (0 -> 15)
+  for (let i = 0; i < 15; i++) {
+    const res = await routeScope(i % 2 === 0 ? null : "equipe3");
+    assert.equal(res.status, 200);
+    assert.equal(res.data.name, "Carlos");
+  }
+
+  // Assim que Carlos completou 15, o lote de catch-up encerra imediatamente (NÃO vai até 20) e retoma 10 em 10 em Ana
+  const nextBatch = [];
+  for (let i = 0; i < 10; i++) {
+    nextBatch.push((await routeScope(null)).data.name);
+  }
+  assert.deepEqual(nextBatch, Array(10).fill("Ana"));
+
+  // Em seguida Bia recebe 10, ficando Ana=25, Bia=25, Carlos=15; e depois Carlos recebe 10 -> 25 = 25 = 25
+  for (let i = 0; i < 10; i++) {
+    assert.equal((await routeScope(null)).data.name, "Bia");
+  }
+  for (let i = 0; i < 10; i++) {
+    assert.equal((await routeScope(null)).data.name, "Carlos");
+  }
+
+  const stats = (await s.admin("stats?period=today")).data;
+  assert.equal(stats.agents.find((x) => x.id === a1.id).deliveries, 25);
+  assert.equal(stats.agents.find((x) => x.id === a2.id).deliveries, 25);
+  assert.equal(stats.agents.find((x) => x.id === carlos.id).deliveries, 25);
+});
+
+
 
 
 

@@ -1390,7 +1390,7 @@ export default function AttendantPanel() {
                 <div>
                   <h2>Organizador de Equipes e Setores (Arrastar, Reordenar e Duplicar)</h2>
                   <p>
-                    Crie equipes com URLs próprias, use os mesmos números em mais de um link (clicando em <strong>Duplicar</strong> ou <strong>+ Copiar p/ equipe</strong>), arraste ou use <strong>↑ ↓</strong> para definir quem é <strong>1º, 2º, 3º…</strong> em cada URL e clique em <strong>Salvar alterações</strong>. <strong>Equalização automática:</strong> se você ativar ou adicionar um número com menos fichas hoje do que os outros, o sistema preenche ele primeiro até igualar antes de retomar a ordem.
+                    Crie equipes com URLs próprias, use os mesmos números em mais de um link (clicando em <strong>Duplicar</strong> ou <strong>+ Copiar p/ equipe</strong>), arraste ou use <strong>↑ ↓</strong> para definir quem é <strong>1º, 2º, 3º…</strong> em cada URL e clique em <strong>Salvar alterações</strong>. <strong>Equalização automática (leitura do dia):</strong> mesmo em rodízio de 10 em 10, se você ativar ou adicionar um número com menos fichas hoje do que os outros, o sistema completa a diferença primeiro até igualar e depois retoma a ordem normal.
                   </p>
                 </div>
               </div>

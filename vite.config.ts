@@ -116,8 +116,10 @@ function devApiPlugin() {
         ? (b.position - a.position) || String(b.id).localeCompare(String(a.id))
         : (a.position - b.position) || String(a.id).localeCompare(String(b.id)),
     );
+    const counts = sorted.map((a) => Number(state.devDeliveries[a.id] || 0));
+    const allEqual = counts.every((c) => c === counts[0]);
     const activeCursor = cursorId ? sorted.find((a) => a.id === cursorId) : undefined;
-    if (used < batchSize && activeCursor) {
+    if (used < batchSize && activeCursor && !(used > 0 && allEqual)) {
       return { selected: activeCursor, nextCursor: activeCursor.id, nextUsed: used + 1 };
     }
     const minCount = Math.min(...sorted.map((a) => Number(state.devDeliveries[a.id] || 0)));
@@ -527,10 +529,31 @@ function devApiPlugin() {
           }
         }
 
+        const resetScopeCursor = (teamId: string | null) => {
+          if (!teamId) {
+            state.generalCursorAgent = null;
+            state.generalUsed = 0;
+            state.devTeams.forEach((t: any) => {
+              const sm = normalizeSync(t.sync_mode);
+              if (sm === 'general_same' || sm === 'general_reverse') {
+                t.cursorAgent = null;
+                t.used = 0;
+              }
+            });
+          } else {
+            const tm = state.devTeams.find((t: any) => t.id === teamId);
+            if (tm) {
+              tm.cursorAgent = null;
+              tm.used = 0;
+            }
+          }
+        };
+
         if (pathname === '/api/admin/agents/move' && req.method === 'POST') {
           const data = await readJson(req);
           const agent = state.devAgents.find((a: any) => a.id === data.agentId && !a.deleted);
           if (agent) {
+            const prevTeam = agent.team_id || null;
             const nextTeam = data.teamId || null;
             const conflict = state.devAgents.some(
               (a: any) => !a.deleted && a.id !== agent.id && (a.team_id || null) === nextTeam && a.phone === agent.phone,
@@ -541,6 +564,8 @@ function devApiPlugin() {
               return;
             }
             agent.team_id = nextTeam;
+            resetScopeCursor(prevTeam);
+            if (nextTeam !== prevTeam) resetScopeCursor(nextTeam);
           }
           persistState();
           res.end(JSON.stringify({ ok: true }));
@@ -571,6 +596,7 @@ function devApiPlugin() {
             deleted: 0,
             team_id: targetTeam,
           });
+          resetScopeCursor(targetTeam);
           persistState();
           res.end(JSON.stringify({ ok: true }));
           return;
@@ -605,11 +631,20 @@ function devApiPlugin() {
               res.end(JSON.stringify({ error: "Esse telefone já está cadastrado nessa equipe." }));
               return;
             }
+            const prevActive = agent.active;
+            const prevPos = agent.position;
+            const prevTeam = agent.team_id || null;
+            const nextActive = data.active ? 1 : 0;
+            const nextPos = Number.isInteger(data.position) ? data.position : agent.position;
             agent.name = String(data.name || agent.name).trim();
             agent.phone = phone;
-            agent.active = data.active ? 1 : 0;
-            agent.position = Number.isInteger(data.position) ? data.position : agent.position;
+            agent.active = nextActive;
+            agent.position = nextPos;
             agent.team_id = nextTeam;
+            if (prevActive !== nextActive || prevPos !== nextPos || prevTeam !== nextTeam) {
+              resetScopeCursor(prevTeam);
+              if (nextTeam !== prevTeam) resetScopeCursor(nextTeam);
+            }
             persistState();
             res.end(JSON.stringify({ ok: true }));
             return;

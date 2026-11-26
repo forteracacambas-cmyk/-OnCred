@@ -77,7 +77,14 @@ BEGIN
 
  UPDATE settings SET
   cursor_agent=CASE
-   WHEN used<batch_size AND EXISTS(SELECT 1 FROM agents WHERE id=cursor_agent AND active=1 AND deleted=0 AND team_id IS NULL)
+   WHEN used<batch_size
+    AND EXISTS(SELECT 1 FROM agents WHERE id=cursor_agent AND active=1 AND deleted=0 AND team_id IS NULL)
+    AND (used=0 OR EXISTS(
+     SELECT 1 FROM agents b
+     WHERE b.active=1 AND b.deleted=0 AND b.team_id IS NULL
+      AND (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=b.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
+       !=(SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=cursor_agent AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
+    ))
    THEN cursor_agent
    ELSE COALESCE(
     (SELECT a.id FROM agents a
@@ -103,7 +110,14 @@ BEGIN
    )
   END,
   used=CASE
-   WHEN used<batch_size AND EXISTS(SELECT 1 FROM agents WHERE id=cursor_agent AND active=1 AND deleted=0 AND team_id IS NULL)
+   WHEN used<batch_size
+    AND EXISTS(SELECT 1 FROM agents WHERE id=cursor_agent AND active=1 AND deleted=0 AND team_id IS NULL)
+    AND (used=0 OR EXISTS(
+     SELECT 1 FROM agents b
+     WHERE b.active=1 AND b.deleted=0 AND b.team_id IS NULL
+      AND (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=b.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
+       !=(SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=cursor_agent AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
+    ))
    THEN used ELSE 0
   END
  WHERE id=1
@@ -114,7 +128,14 @@ BEGIN
   cursor_agent=CASE
    WHEN sync_mode IN ('general_same','general_reverse') THEN
     CASE
-     WHEN used<batch_size AND EXISTS(SELECT 1 FROM agents WHERE id=cursor_agent AND active=1 AND deleted=0 AND team_id IS NULL)
+     WHEN used<batch_size
+      AND EXISTS(SELECT 1 FROM agents WHERE id=cursor_agent AND active=1 AND deleted=0 AND team_id IS NULL)
+      AND (used=0 OR EXISTS(
+       SELECT 1 FROM agents b
+       WHERE b.active=1 AND b.deleted=0 AND b.team_id IS NULL
+        AND (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=b.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
+         !=(SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=cursor_agent AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
+      ))
      THEN cursor_agent
      WHEN sync_mode='general_reverse' THEN
       COALESCE(
@@ -168,7 +189,14 @@ BEGIN
     END
    ELSE
     CASE
-     WHEN used<batch_size AND EXISTS(SELECT 1 FROM agents WHERE id=cursor_agent AND active=1 AND deleted=0 AND team_id=NEW.team_id)
+     WHEN used<batch_size
+      AND EXISTS(SELECT 1 FROM agents WHERE id=cursor_agent AND active=1 AND deleted=0 AND team_id=NEW.team_id)
+      AND (used=0 OR EXISTS(
+       SELECT 1 FROM agents b
+       WHERE b.active=1 AND b.deleted=0 AND b.team_id=NEW.team_id
+        AND (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=b.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
+         !=(SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=cursor_agent AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
+      ))
      THEN cursor_agent
      ELSE COALESCE(
       (SELECT a.id FROM agents a
@@ -195,9 +223,25 @@ BEGIN
     END
   END,
   used=CASE
-   WHEN sync_mode IN ('general_same','general_reverse') AND used<batch_size AND EXISTS(SELECT 1 FROM agents WHERE id=cursor_agent AND active=1 AND deleted=0 AND team_id IS NULL)
+   WHEN sync_mode IN ('general_same','general_reverse')
+    AND used<batch_size
+    AND EXISTS(SELECT 1 FROM agents WHERE id=cursor_agent AND active=1 AND deleted=0 AND team_id IS NULL)
+    AND (used=0 OR EXISTS(
+     SELECT 1 FROM agents b
+     WHERE b.active=1 AND b.deleted=0 AND b.team_id IS NULL
+      AND (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=b.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
+       !=(SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=cursor_agent AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
+    ))
    THEN used
-   WHEN sync_mode='independent' AND used<batch_size AND EXISTS(SELECT 1 FROM agents WHERE id=cursor_agent AND active=1 AND deleted=0 AND team_id=NEW.team_id)
+   WHEN sync_mode='independent'
+    AND used<batch_size
+    AND EXISTS(SELECT 1 FROM agents WHERE id=cursor_agent AND active=1 AND deleted=0 AND team_id=NEW.team_id)
+    AND (used=0 OR EXISTS(
+     SELECT 1 FROM agents b
+     WHERE b.active=1 AND b.deleted=0 AND b.team_id=NEW.team_id
+      AND (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=b.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
+       !=(SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=cursor_agent AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
+    ))
    THEN used
    ELSE 0
   END
@@ -298,7 +342,8 @@ async function ensureSchema(db) {
         String(assignRow.sql || "").includes("team_id") &&
         String(assignRow.sql || "").includes("sync_mode") &&
         String(assignRow.sql || "").includes("10800000") &&
-        String(assignRow.sql || "").includes("deliveries d WHERE d.agent_id=b.id");
+        String(assignRow.sql || "").includes("deliveries d WHERE d.agent_id=b.id") &&
+        String(assignRow.sql || "").includes("!=(SELECT COUNT(*)");
 
       const phoneIdx = await db
         .prepare(
@@ -1130,6 +1175,10 @@ async function handle({ request, env, params }) {
     if (path === "/api/admin/agents/move" && request.method === "POST") {
       const data = await body(request);
       if (!validID(data.agentId)) fail("Atendente inválido.");
+      const prevAgent = await sql(
+        "SELECT team_id FROM agents WHERE id=? AND deleted=0",
+        data.agentId,
+      ).first();
       let targetTeamId = null;
       if (data.teamId) {
         if (!validID(data.teamId)) fail("Equipe de destino inválida.");
@@ -1140,11 +1189,26 @@ async function handle({ request, env, params }) {
         if (!foundTeam) fail("Equipe de destino não encontrada.", 404);
         targetTeamId = data.teamId;
       }
-      await sql(
-        "UPDATE agents SET team_id=? WHERE id=? AND deleted=0",
-        targetTeamId,
-        data.agentId,
-      ).run();
+      const resetStmts = [
+        sql(
+          "UPDATE agents SET team_id=? WHERE id=? AND deleted=0",
+          targetTeamId,
+          data.agentId,
+        ),
+      ];
+      if (!prevAgent?.team_id || !targetTeamId) {
+        resetStmts.push(sql("UPDATE settings SET cursor_agent=NULL, used=0 WHERE id=1"));
+        resetStmts.push(
+          sql("UPDATE teams SET cursor_agent=NULL, used=0 WHERE deleted=0 AND sync_mode IN ('general_same','general_reverse')"),
+        );
+      }
+      if (prevAgent?.team_id) {
+        resetStmts.push(sql("UPDATE teams SET cursor_agent=NULL, used=0 WHERE id=?", prevAgent.team_id));
+      }
+      if (targetTeamId && targetTeamId !== prevAgent?.team_id) {
+        resetStmts.push(sql("UPDATE teams SET cursor_agent=NULL, used=0 WHERE id=?", targetTeamId));
+      }
+      await db.batch(resetStmts);
       return json({ ok: true });
     }
     if (path === "/api/admin/agents" && request.method === "POST") {
@@ -1163,13 +1227,24 @@ async function handle({ request, env, params }) {
         if (!foundTeam) fail("Equipe não encontrada.", 404);
         teamId = data.team_id;
       }
-      await sql(
-        "INSERT INTO agents(id,name,phone,position,team_id) SELECT ?,?,?,COALESCE(MAX(position),0)+1,? FROM agents",
-        uuid(),
-        name,
-        phone,
-        teamId,
-      ).run();
+      const addStmts = [
+        sql(
+          "INSERT INTO agents(id,name,phone,position,team_id) SELECT ?,?,?,COALESCE(MAX(position),0)+1,? FROM agents",
+          uuid(),
+          name,
+          phone,
+          teamId,
+        ),
+      ];
+      if (!teamId) {
+        addStmts.push(sql("UPDATE settings SET cursor_agent=NULL, used=0 WHERE id=1"));
+        addStmts.push(
+          sql("UPDATE teams SET cursor_agent=NULL, used=0 WHERE deleted=0 AND sync_mode IN ('general_same','general_reverse')"),
+        );
+      } else {
+        addStmts.push(sql("UPDATE teams SET cursor_agent=NULL, used=0 WHERE id=?", teamId));
+      }
+      await db.batch(addStmts);
       return json({ ok: true });
     }
     if (
@@ -1202,15 +1277,42 @@ async function handle({ request, env, params }) {
         if (!foundTeam) fail("Equipe não encontrada.", 404);
         teamId = data.team_id;
       }
-      await sql(
-        "UPDATE agents SET name=?,phone=?,active=?,position=?,team_id=? WHERE id=? AND deleted=0",
-        name,
-        normalizePhone(data.phone),
-        data.active ? 1 : 0,
-        data.position,
-        teamId,
+      const prev = await sql(
+        "SELECT active, position, team_id FROM agents WHERE id=? AND deleted=0",
         id,
-      ).run();
+      ).first();
+      const nextActive = data.active ? 1 : 0;
+      const routingChanged =
+        prev &&
+        (prev.active !== nextActive ||
+          prev.position !== data.position ||
+          (prev.team_id || null) !== teamId);
+      const putStmts = [
+        sql(
+          "UPDATE agents SET name=?,phone=?,active=?,position=?,team_id=? WHERE id=? AND deleted=0",
+          name,
+          normalizePhone(data.phone),
+          nextActive,
+          data.position,
+          teamId,
+          id,
+        ),
+      ];
+      if (routingChanged) {
+        if (!prev.team_id || !teamId) {
+          putStmts.push(sql("UPDATE settings SET cursor_agent=NULL, used=0 WHERE id=1"));
+          putStmts.push(
+            sql("UPDATE teams SET cursor_agent=NULL, used=0 WHERE deleted=0 AND sync_mode IN ('general_same','general_reverse')"),
+          );
+        }
+        if (prev.team_id) {
+          putStmts.push(sql("UPDATE teams SET cursor_agent=NULL, used=0 WHERE id=?", prev.team_id));
+        }
+        if (teamId && teamId !== prev.team_id) {
+          putStmts.push(sql("UPDATE teams SET cursor_agent=NULL, used=0 WHERE id=?", teamId));
+        }
+      }
+      await db.batch(putStmts);
       return json({ ok: true });
     }
     if (path === "/api/admin/stats" && request.method === "GET") {

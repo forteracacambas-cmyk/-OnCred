@@ -8,7 +8,14 @@ BEGIN
 
  UPDATE settings SET
   cursor_agent=CASE
-   WHEN used<batch_size AND EXISTS(SELECT 1 FROM agents WHERE id=cursor_agent AND active=1 AND deleted=0 AND team_id IS NULL)
+   WHEN used<batch_size
+    AND EXISTS(SELECT 1 FROM agents WHERE id=cursor_agent AND active=1 AND deleted=0 AND team_id IS NULL)
+    AND (used=0 OR EXISTS(
+     SELECT 1 FROM agents b
+     WHERE b.active=1 AND b.deleted=0 AND b.team_id IS NULL
+      AND (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=b.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
+       !=(SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=cursor_agent AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
+    ))
    THEN cursor_agent
    ELSE COALESCE(
     (SELECT a.id FROM agents a
@@ -34,7 +41,14 @@ BEGIN
    )
   END,
   used=CASE
-   WHEN used<batch_size AND EXISTS(SELECT 1 FROM agents WHERE id=cursor_agent AND active=1 AND deleted=0 AND team_id IS NULL)
+   WHEN used<batch_size
+    AND EXISTS(SELECT 1 FROM agents WHERE id=cursor_agent AND active=1 AND deleted=0 AND team_id IS NULL)
+    AND (used=0 OR EXISTS(
+     SELECT 1 FROM agents b
+     WHERE b.active=1 AND b.deleted=0 AND b.team_id IS NULL
+      AND (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=b.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
+       !=(SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=cursor_agent AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
+    ))
    THEN used ELSE 0
   END
  WHERE id=1
@@ -45,7 +59,14 @@ BEGIN
   cursor_agent=CASE
    WHEN sync_mode IN ('general_same','general_reverse') THEN
     CASE
-     WHEN used<batch_size AND EXISTS(SELECT 1 FROM agents WHERE id=cursor_agent AND active=1 AND deleted=0 AND team_id IS NULL)
+     WHEN used<batch_size
+      AND EXISTS(SELECT 1 FROM agents WHERE id=cursor_agent AND active=1 AND deleted=0 AND team_id IS NULL)
+      AND (used=0 OR EXISTS(
+       SELECT 1 FROM agents b
+       WHERE b.active=1 AND b.deleted=0 AND b.team_id IS NULL
+        AND (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=b.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
+         !=(SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=cursor_agent AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
+      ))
      THEN cursor_agent
      WHEN sync_mode='general_reverse' THEN
       COALESCE(
@@ -99,7 +120,14 @@ BEGIN
     END
    ELSE
     CASE
-     WHEN used<batch_size AND EXISTS(SELECT 1 FROM agents WHERE id=cursor_agent AND active=1 AND deleted=0 AND team_id=NEW.team_id)
+     WHEN used<batch_size
+      AND EXISTS(SELECT 1 FROM agents WHERE id=cursor_agent AND active=1 AND deleted=0 AND team_id=NEW.team_id)
+      AND (used=0 OR EXISTS(
+       SELECT 1 FROM agents b
+       WHERE b.active=1 AND b.deleted=0 AND b.team_id=NEW.team_id
+        AND (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=b.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
+         !=(SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=cursor_agent AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
+      ))
      THEN cursor_agent
      ELSE COALESCE(
       (SELECT a.id FROM agents a
@@ -126,9 +154,25 @@ BEGIN
     END
   END,
   used=CASE
-   WHEN sync_mode IN ('general_same','general_reverse') AND used<batch_size AND EXISTS(SELECT 1 FROM agents WHERE id=cursor_agent AND active=1 AND deleted=0 AND team_id IS NULL)
+   WHEN sync_mode IN ('general_same','general_reverse')
+    AND used<batch_size
+    AND EXISTS(SELECT 1 FROM agents WHERE id=cursor_agent AND active=1 AND deleted=0 AND team_id IS NULL)
+    AND (used=0 OR EXISTS(
+     SELECT 1 FROM agents b
+     WHERE b.active=1 AND b.deleted=0 AND b.team_id IS NULL
+      AND (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=b.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
+       !=(SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=cursor_agent AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
+    ))
    THEN used
-   WHEN sync_mode='independent' AND used<batch_size AND EXISTS(SELECT 1 FROM agents WHERE id=cursor_agent AND active=1 AND deleted=0 AND team_id=NEW.team_id)
+   WHEN sync_mode='independent'
+    AND used<batch_size
+    AND EXISTS(SELECT 1 FROM agents WHERE id=cursor_agent AND active=1 AND deleted=0 AND team_id=NEW.team_id)
+    AND (used=0 OR EXISTS(
+     SELECT 1 FROM agents b
+     WHERE b.active=1 AND b.deleted=0 AND b.team_id=NEW.team_id
+      AND (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=b.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
+       !=(SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=cursor_agent AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
+    ))
    THEN used
    ELSE 0
   END
