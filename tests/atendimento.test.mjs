@@ -22,7 +22,9 @@ const schema = (
   "\n" +
   (await readFile("migrations/0004_team_sync_mode.sql", "utf8")) +
   "\n" +
-  (await readFile("migrations/0005_equalize_distribution.sql", "utf8"))
+  (await readFile("migrations/0005_equalize_distribution.sql", "utf8")) +
+  "\n" +
+  (await readFile("migrations/0006_ordered_round_robin.sql", "utf8"))
 ).replace(/--[^\n]*/g, "");
 const legacySchema = (
   await readFile("migrations/0001_atendimento.sql", "utf8")
@@ -858,66 +860,70 @@ test("banco existente (0001+0002+0003) com equipe3 já criada migra automaticame
   assert.equal(r.data.name, "Ultimo");
 });
 
-test("equalização preenche atendente ativado/adicionado com menos fichas hoje até igualar e depois retoma a ordem", async (t) => {
+test("número novo ou reativado recebe até 1 lote inicial primeiro e depois a firma distribui em ordem igual (1 -> 2 -> 3...)", async (t) => {
   const s = await setup(t);
-  const a = await s.add("Ana", "11999990001");
-  const b = await s.add("Bia", "11999990002");
+  await s.admin("config", "PUT", { batchSize: 5 });
+  const a1 = await s.add("At1", "11999990001");
+  const a2 = await s.add("At2", "11999990002");
+  const a3 = await s.add("At3", "11999990003");
+  const a4 = await s.add("At4", "11999990004");
+  const a5 = await s.add("At5", "11999990005");
+  const a6 = await s.add("At6", "11999990006");
 
-  // Ana e Bia recebem 10 fichas cada uma hoje
-  for (let i = 0; i < 20; i++) {
+  // Simula 1..6 já com 25 fichas cada hoje no banco (sem catch-up pendente)
+  const now = Date.now();
+  for (const agent of [a1, a2, a3, a4, a5, a6]) {
+    for (let i = 0; i < 25; i++) {
+      const vid = crypto.randomUUID();
+      await s.db.prepare("INSERT INTO visitors(id,event_id,agent_id,created_at) VALUES(?,?,?,?)").bind(vid, crypto.randomUUID(), agent.id, now).run();
+      await s.db.prepare("INSERT INTO deliveries(id,visitor_id,agent_id,created_at,first_delivery) VALUES(?,?,?,?,1)").bind(crypto.randomUUID(), vid, agent.id, now).run();
+    }
+  }
+
+  // Adiciona #7 no meio do dia (com 0 fichas enquanto 1..6 têm 25)
+  const a7 = await s.add("At7", "11999990007");
+  assert.ok(a7.id);
+
+  // #7 recebe apenas 1 lote inicial (5 fichas), e NÃO 25 fichas que travariam os outros
+  for (let i = 0; i < 5; i++) {
     const c = await s.visitor();
     const r = await s.route(c);
     assert.equal(r.status, 200);
-    assert.equal(r.data.name, i % 2 === 0 ? "Ana" : "Bia");
+    assert.equal(r.data.name, "At7");
   }
 
-  // Admin adiciona/ativa Carlos agora (com 0 fichas hoje)
-  const carlos = await s.add("Carlos", "11999990003");
-  assert.ok(carlos.id);
+  // Assim que #7 termina o lote inicial, a firma inicia em ordem igual: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 1
+  const expectedCycle = ["At1", "At2", "At3", "At4", "At5", "At6", "At7", "At1"];
+  for (const expectedName of expectedCycle) {
+    for (let k = 0; k < 5; k++) {
+      const c = await s.visitor();
+      const r = await s.route(c);
+      assert.equal(r.status, 200);
+      assert.equal(r.data.name, expectedName);
+    }
+  }
 
-  // Próximas 10 fichas preenchem Carlos primeiro até ficar igual (10 = 10 = 10)
+  // Pausa At2, avança mais 10 fichas, e reativa At2 (atrasado no dia): recebe 1 lote inicial (5) e retoma de At1
+  await s.admin("agents/" + a2.id, "PUT", { ...a2, active: false });
   for (let i = 0; i < 10; i++) {
-    const c = await s.visitor();
-    const r = await s.route(c);
-    assert.equal(r.status, 200);
-    assert.equal(r.data.name, "Carlos");
-  }
-
-  // Agora todos estão iguais com 10 -> retoma a ordem normal Ana -> Bia -> Carlos
-  const nextOrder = [];
-  for (let i = 0; i < 3; i++) {
-    const c = await s.visitor();
-    nextOrder.push((await s.route(c)).data.name);
-  }
-  assert.deepEqual(nextOrder, ["Ana", "Bia", "Carlos"]);
-
-  // Pausa Bia com 11 fichas enquanto Ana e Carlos chegam em 14, depois reativa Bia
-  await s.admin("agents/" + b.id, "PUT", { ...b, active: false });
-  for (let i = 0; i < 6; i++) {
     const c = await s.visitor();
     await s.route(c);
   }
-  await s.admin("agents/" + b.id, "PUT", { ...b, active: true });
+  await s.admin("agents/" + a2.id, "PUT", { ...a2, active: true });
 
-  // Bia está com 11 e Ana/Carlos com 14 -> próximas 3 fichas preenchem Bia até 14
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < 5; i++) {
     const c = await s.visitor();
-    assert.equal((await s.route(c)).data.name, "Bia");
+    assert.equal((await s.route(c)).data.name, "At2");
   }
-
-  // Estatísticas confirmam todos exatamente empatados em 14 fichas hoje
-  const stats = (await s.admin("stats?period=today")).data;
-  assert.equal(stats.agents.find((x) => x.id === a.id).deliveries, 14);
-  assert.equal(stats.agents.find((x) => x.id === b.id).deliveries, 14);
-  assert.equal(stats.agents.find((x) => x.id === carlos.id).deliveries, 14);
+  assert.equal((await s.route(await s.visitor())).data.name, "At1");
 });
 
-test("sistema unificado entre Site Principal (cima pra baixo) e Equipe 3 (baixo pra cima) equaliza fichas", async (t) => {
+test("cada firma (Site Principal, Equipe 3 invertida e link direto) mantém ordem independente sem pular ou cortar lote", async (t) => {
   const s = await setup(t);
   const init = await s.admin("save", "POST", {
-    batchSize: 1,
+    batchSize: 3,
     teams: [
-      { id: "temp-e3", name: "Equipe 3", slug: "equipe3", batch_size: 1, active: true, sync_mode: "general_reverse" },
+      { id: "temp-e3", name: "Equipe 3", slug: "equipe3", batch_size: 3, active: true, sync_mode: "general_reverse" },
     ],
     agents: [
       { id: "temp-a", name: "Ana", phone: "11911110001", position: 1, active: true, team_id: null },
@@ -936,75 +942,90 @@ test("sistema unificado entre Site Principal (cima pra baixo) e Equipe 3 (baixo 
     });
   };
 
-  // Ana e Bia recebem 6 fichas cada: Site Principal alterna Ana->Bia e Equipe 3 alterna Bia->Ana enquanto Carlos está pausado
-  for (let i = 0; i < 6; i++) {
-    assert.equal((await routeScope(null)).data.name, i % 2 === 0 ? "Ana" : "Bia");
-    assert.equal((await routeScope("equipe3")).data.name, i % 2 === 0 ? "Bia" : "Ana");
+  // Cliques extras diretos em /atendimento1 para Ana (5 fichas extras) não podem fazer Ana ser pulada no Site Principal
+  for (let i = 0; i < 5; i++) {
+    const c = await s.visitor();
+    const r = await s.call("route", {
+      method: "POST",
+      cookie: c,
+      body: { analytics: true, handoffId: crypto.randomUUID(), agent: "atendimento1" },
+    });
+    assert.equal(r.status, 200);
+    assert.equal(r.data.name, "Ana");
   }
 
-  // Agora reativa Carlos (com 0 fichas hoje)
+  // Site Principal segue estritamente 3x Ana -> 3x Bia; Equipe 3 segue estritamente 3x Bia -> 3x Ana
+  for (let i = 0; i < 3; i++) assert.equal((await routeScope(null)).data.name, "Ana");
+  for (let i = 0; i < 3; i++) assert.equal((await routeScope("equipe3")).data.name, "Bia");
+  for (let i = 0; i < 3; i++) assert.equal((await routeScope(null)).data.name, "Bia");
+  for (let i = 0; i < 3; i++) assert.equal((await routeScope("equipe3")).data.name, "Ana");
+
+  // Reativa Carlos (0 fichas hoje): tanto no Site Principal quanto na Equipe 3 recebe seu lote inicial de 3
   const carlosReactivated = init.data.agents.map((a) =>
     a.name === "Carlos" ? { ...a, active: true } : a,
   );
   assert.equal(
-    (await s.admin("save", "POST", { batchSize: 1, teams: init.data.teams, agents: carlosReactivated })).status,
+    (await s.admin("save", "POST", { batchSize: 3, teams: init.data.teams, agents: carlosReactivated })).status,
     200,
   );
 
-  // Tanto chamadas no Site Principal quanto na Equipe 3 preenchem Carlos primeiro até empatar em 6
-  for (let i = 0; i < 6; i++) {
-    const slug = i % 2 === 0 ? null : "equipe3";
-    assert.equal((await routeScope(slug)).data.name, "Carlos");
-  }
+  for (let i = 0; i < 3; i++) assert.equal((await routeScope(null)).data.name, "Carlos");
+  // Após lote inicial no Site Principal, volta para 1º (Ana -> Bia -> Carlos)
+  for (let i = 0; i < 3; i++) assert.equal((await routeScope(null)).data.name, "Ana");
+  for (let i = 0; i < 3; i++) assert.equal((await routeScope(null)).data.name, "Bia");
+  for (let i = 0; i < 3; i++) assert.equal((await routeScope(null)).data.name, "Carlos");
 
-  // Igualados em 6: Site Principal segue de cima pra baixo (Ana=7), Equipe 3 passa para Bia (7) e depois Carlos (7)
-  assert.equal((await routeScope(null)).data.name, "Ana");
-  assert.equal((await routeScope("equipe3")).data.name, "Bia");
-  assert.equal((await routeScope("equipe3")).data.name, "Carlos");
-
-  const stats = (await s.admin("stats?period=today")).data;
-  assert.deepEqual(
-    stats.agents.map((x) => x.deliveries),
-    [7, 7, 7],
-  );
+  // Na Equipe 3 (invertida), Carlos recebe seu lote inicial (3) e em seguida retoma do 1º invertido (Carlos -> Bia -> Ana)
+  for (let i = 0; i < 3; i++) assert.equal((await routeScope("equipe3")).data.name, "Carlos");
+  for (let i = 0; i < 3; i++) assert.equal((await routeScope("equipe3")).data.name, "Carlos");
+  for (let i = 0; i < 3; i++) assert.equal((await routeScope("equipe3")).data.name, "Bia");
+  for (let i = 0; i < 3; i++) assert.equal((await routeScope("equipe3")).data.name, "Ana");
 });
 
-test("banco existente (0001..0004) atualiza triggers via ensureSchema para aplicar equalização", async (t) => {
-  const preEqSchema = (
-    (await readFile("migrations/0001_atendimento.sql", "utf8")) +
-    "\n" +
-    (await readFile("migrations/0002_equipes.sql", "utf8")) +
-    "\n" +
-    (await readFile("migrations/0003_multi_equipe_phone.sql", "utf8")) +
-    "\n" +
-    (await readFile("migrations/0004_team_sync_mode.sql", "utf8"))
-  ).replace(/--[^\n]*/g, "");
-  const s = await setup(t, preEqSchema);
-  const a1 = await s.add("Ana", "11999990001");
-  const a2 = await s.add("Bia", "11999990002");
+test("bancos existentes (0001..0004 e 0001..0005) atualizam via ensureSchema para 0006 sem travar ordem", async (t) => {
+  for (const include0005 of [false, true]) {
+    const parts = [
+      await readFile("migrations/0001_atendimento.sql", "utf8"),
+      await readFile("migrations/0002_equipes.sql", "utf8"),
+      await readFile("migrations/0003_multi_equipe_phone.sql", "utf8"),
+      await readFile("migrations/0004_team_sync_mode.sql", "utf8"),
+    ];
+    if (include0005) {
+      parts.push(await readFile("migrations/0005_equalize_distribution.sql", "utf8"));
+    }
+    const oldSchema = parts.join("\n").replace(/--[^\n]*/g, "");
+    const s = await setup(t, oldSchema);
+    await s.admin("config", "PUT", { batchSize: 2 });
+    const a1 = await s.add("Ana", "11999990001");
+    const a2 = await s.add("Bia", "11999990002");
 
-  // Simula 5 fichas antigas de hoje para Ana e 0 para Bia usando entrega direta no banco
-  const now = Date.now();
-  for (let i = 0; i < 5; i++) {
-    const vid = crypto.randomUUID();
-    await s.db.prepare("INSERT INTO visitors(id,event_id,agent_id,created_at) VALUES(?,?,?,?)").bind(vid, crypto.randomUUID(), a1.id, now).run();
-    await s.db.prepare("INSERT INTO deliveries(id,visitor_id,agent_id,created_at,first_delivery) VALUES(?,?,?,?,1)").bind(crypto.randomUUID(), vid, a1.id, now).run();
+    // Simula Ana=10 e Bia=0 hoje direto no banco (sem agent_catchup)
+    const now = Date.now();
+    for (let i = 0; i < 10; i++) {
+      const vid = crypto.randomUUID();
+      await s.db.prepare("INSERT INTO visitors(id,event_id,agent_id,created_at) VALUES(?,?,?,?)").bind(vid, crypto.randomUUID(), a1.id, now).run();
+      await s.db.prepare("INSERT INTO deliveries(id,visitor_id,agent_id,created_at,first_delivery) VALUES(?,?,?,?,1)").bind(crypto.randomUUID(), vid, a1.id, now).run();
+    }
+
+    // ensureSchema cria agent_catchup e atualiza route_assign para seguir ordem estrita 2x Ana -> 2x Bia
+    const seq = [];
+    for (let i = 0; i < 4; i++) {
+      const c = await s.visitor();
+      const r = await s.route(c);
+      assert.equal(r.status, 200);
+      seq.push(r.data.name);
+    }
+    assert.deepEqual(seq, ["Ana", "Ana", "Bia", "Bia"]);
   }
-
-  // Chamada pública aciona ensureSchema (atualiza route_assign e cria índice) e envia para Bia (0 < 5)
-  const c = await s.visitor();
-  const r = await s.route(c);
-  assert.equal(r.status, 200);
-  assert.equal(r.data.id ?? r.data.name, a2.name);
 });
 
-test("rodízio 10 em 10 completa diferença acima ou abaixo de 10 sem ultrapassar e retoma 10 em 10", async (t) => {
+test("rodízio 10 em 10 dá no máximo 1 lote (10) ao número novo mesmo com diferença maior (15) e segue 1 -> 2 -> 3", async (t) => {
   const s = await setup(t);
   await s.admin("config", "PUT", { batchSize: 10 });
   const a1 = await s.add("Ana", "11999990001");
   const a2 = await s.add("Bia", "11999990002");
 
-  // Simula Ana=15 e Bia=15 hoje no banco (passou de 10) + Equipe 3 espelhada (de trás pra frente, lote 10)
+  // Simula Ana=15 e Bia=15 hoje no banco + Equipe 3 espelhada (de trás pra frente, lote 10)
   await s.admin("teams", "POST", {
     name: "Equipe 3",
     slug: "equipe3",
@@ -1020,7 +1041,7 @@ test("rodízio 10 em 10 completa diferença acima ou abaixo de 10 sem ultrapassa
     }
   }
 
-  // Adiciona Carlos com 0 fichas hoje (diferença de 15 > 10)
+  // Adiciona Carlos com 0 fichas hoje (diferença de 15 > lote 10)
   const carlos = await s.add("Carlos", "11999990003");
   const routeScope = async (teamSlug) => {
     const c = await s.visitor();
@@ -1031,32 +1052,22 @@ test("rodízio 10 em 10 completa diferença acima ou abaixo de 10 sem ultrapassa
     });
   };
 
-  // Primeiras 15 fichas (misturando Site Principal e Equipe 3) preenchem Carlos até completar 15 (0 -> 15)
-  for (let i = 0; i < 15; i++) {
-    const res = await routeScope(i % 2 === 0 ? null : "equipe3");
+  // No Site Principal: Carlos recebe 1 lote inicial (10), e NÃO 15
+  for (let i = 0; i < 10; i++) {
+    const res = await routeScope(null);
     assert.equal(res.status, 200);
     assert.equal(res.data.name, "Carlos");
   }
 
-  // Assim que Carlos completou 15, o lote de catch-up encerra imediatamente (NÃO vai até 20) e retoma 10 em 10 em Ana
-  const nextBatch = [];
-  for (let i = 0; i < 10; i++) {
-    nextBatch.push((await routeScope(null)).data.name);
-  }
-  assert.deepEqual(nextBatch, Array(10).fill("Ana"));
-
-  // Em seguida Bia recebe 10, ficando Ana=25, Bia=25, Carlos=15; e depois Carlos recebe 10 -> 25 = 25 = 25
-  for (let i = 0; i < 10; i++) {
-    assert.equal((await routeScope(null)).data.name, "Bia");
-  }
-  for (let i = 0; i < 10; i++) {
-    assert.equal((await routeScope(null)).data.name, "Carlos");
-  }
+  // Assim que Carlos completa 10, Site Principal segue estritamente 10 -> 10 -> 10 em ordem: Ana -> Bia -> Carlos
+  for (let i = 0; i < 10; i++) assert.equal((await routeScope(null)).data.name, "Ana");
+  for (let i = 0; i < 10; i++) assert.equal((await routeScope(null)).data.name, "Bia");
+  for (let i = 0; i < 10; i++) assert.equal((await routeScope(null)).data.name, "Carlos");
 
   const stats = (await s.admin("stats?period=today")).data;
   assert.equal(stats.agents.find((x) => x.id === a1.id).deliveries, 25);
   assert.equal(stats.agents.find((x) => x.id === a2.id).deliveries, 25);
-  assert.equal(stats.agents.find((x) => x.id === carlos.id).deliveries, 25);
+  assert.equal(stats.agents.find((x) => x.id === carlos.id).deliveries, 20);
 });
 
 test("sessão persistente via cookie HttpOnly (30 dias), proteção cross-site e logout revogando cookie", async (t) => {
@@ -1117,7 +1128,7 @@ test("sessão persistente via cookie HttpOnly (30 dias), proteção cross-site e
   assert.equal(afterLogoutRes.status, 401);
 });
 
-test("/api/admin/stats retorna queues em tempo real (chegando agora, próximo, progresso 10 em 10, equalização e equipe3 invertida)", async (t) => {
+test("/api/admin/stats retorna queues em tempo real (chegando agora, próximo, progresso 10 em 10, entrada inicial e equipe3 invertida)", async (t) => {
   const s = await setup(t);
   await s.admin("config", "PUT", { batchSize: 10 });
   const a1 = await s.add("Ana", "11999990001");
@@ -1154,7 +1165,7 @@ test("/api/admin/stats retorna queues em tempo real (chegando agora, próximo, p
   assert.equal(st.queues.general.receivingNow.remainingToSwitch, 6);
   assert.equal(st.queues.general.nextUp.id, a2.id);
 
-  // Completa os 10 de Ana -> agora quem está chegando no Geral passa a ser Bia (usedInBatch 0, faltam 10)
+  // Completa os 10 de Ana -> agora quem está chegando no Geral passa a ser Bia no rodízio normal (usedInBatch 0, faltam 10)
   for (let i = 0; i < 6; i++) {
     const v = await s.visitor();
     assert.equal((await s.route(v)).data.name, "Ana");
@@ -1163,24 +1174,24 @@ test("/api/admin/stats retorna queues em tempo real (chegando agora, próximo, p
   assert.equal(st.queues.general.receivingNow.id, a2.id);
   assert.equal(st.queues.general.receivingNow.usedInBatch, 0);
   assert.equal(st.queues.general.receivingNow.remainingToSwitch, 10);
+  assert.equal(st.queues.general.receivingNow.equalizing, false);
+  assert.equal(st.queues.general.nextUp.id, a1.id);
+
+  // Adiciona Carlos com 0 fichas enquanto Ana=10, Bia=0 -> Carlos entra com 1 lote inicial (10) e em seguida volta para Ana (1º) no Geral
+  const carlos = await s.add("Carlos", "11999990003");
+  st = (await s.admin("stats?period=today")).data;
+  assert.equal(st.queues.general.receivingNow.id, carlos.id);
   assert.equal(st.queues.general.receivingNow.equalizing, true);
   assert.equal(st.queues.general.receivingNow.missingToEqualize, 10);
   assert.equal(st.queues.general.nextUp.id, a1.id);
 
-  // Adiciona Carlos com 0 fichas enquanto Ana=10, Bia=0 -> primeiro menor ainda é Bia (pos 2), próximo é Carlos (pos 3)
-  const carlos = await s.add("Carlos", "11999990003");
-  st = (await s.admin("stats?period=today")).data;
-  assert.equal(st.queues.general.receivingNow.id, a2.id);
-  assert.equal(st.queues.general.receivingNow.equalizing, true);
-  assert.equal(st.queues.general.receivingNow.missingToEqualize, 10);
-  assert.equal(st.queues.general.nextUp.id, carlos.id);
-
-  // Na Equipe 3 (invertida), Carlos está no topo (0 fichas, falta 10 p/ igualar) e o próximo depois de igualar em 10 será Bia (0 fichas)!
+  // Na Equipe 3 (invertida), Carlos entra na entrada inicial (10) e o próximo diferente na fila é Bia (2º na ordem invertida após Carlos)
   assert.equal(st.queues.teams[t3.id].receivingNow.id, carlos.id);
   assert.equal(st.queues.teams[t3.id].receivingNow.equalizing, true);
   assert.equal(st.queues.teams[t3.id].receivingNow.missingToEqualize, 10);
   assert.equal(st.queues.teams[t3.id].nextUp.id, a2.id);
 });
+
 
 
 

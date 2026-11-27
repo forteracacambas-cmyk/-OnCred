@@ -1190,7 +1190,7 @@ export default function AttendantPanel() {
       <div className={`team-queue-live ${nowInfo.equalizing ? "is-equalizing" : ""}`}>
         <div className="team-queue-row">
           <span className={`queue-pill ${nowInfo.equalizing ? "equalizing" : "now"}`}>
-            {nowInfo.equalizing ? "⚡ Equalizando" : "● Chegando agora"}
+            {nowInfo.equalizing ? "⚡ Entrada inicial" : "● Chegando agora"}
           </span>
           <strong className="queue-agent-name">{nowInfo.name}</strong>
           <span className="queue-today-chip">Hoje: {nowInfo.todayCount}</span>
@@ -1198,10 +1198,10 @@ export default function AttendantPanel() {
         <div className="team-queue-subrow">
           <span>
             {nowInfo.equalizing
-              ? `Faltam ${nowInfo.missingToEqualize} para igualar em ${queueInfo.maxToday} (lote ${nowInfo.usedInBatch}/${nowInfo.batchSize})`
+              ? `Faltam ${nowInfo.missingToEqualize} ficha(s) de entrada inicial para iniciar a ordem (1º → 2º → 3º…)`
               : nowInfo.batchSize > 1
               ? `Lote ${nowInfo.usedInBatch}/${nowInfo.batchSize} · faltam ${nowInfo.remainingToSwitch ?? nowInfo.batchSize} p/ trocar`
-              : "Rodízio 1 por vez"}
+              : "Rodízio em ordem (1 por vez)"}
           </span>
           <span className="queue-next-label">
             {nextInfo ? (
@@ -1281,7 +1281,7 @@ export default function AttendantPanel() {
                 {isReceivingNow && queueInfo?.receivingNow && (
                   <span className={`queue-badge ${queueInfo.receivingNow.equalizing ? "equalizing" : "now"}`}>
                     {queueInfo.receivingNow.equalizing
-                      ? `⚡ Equalizando (faltam ${queueInfo.receivingNow.missingToEqualize})`
+                      ? `⚡ Entrada inicial (faltam ${queueInfo.receivingNow.missingToEqualize})`
                       : queueInfo.batchSize > 1
                       ? `● Chegando (${queueInfo.receivingNow.usedInBatch}/${queueInfo.batchSize})`
                       : "● Chegando agora"}
@@ -1622,7 +1622,7 @@ export default function AttendantPanel() {
                 <div>
                   <h2>Organizador de Equipes e Setores (Arrastar, Reordenar e Duplicar)</h2>
                   <p>
-                    Crie equipes com URLs próprias, use os mesmos números em mais de um link (clicando em <strong>Duplicar</strong> ou <strong>+ Copiar p/ equipe</strong>), arraste ou use <strong>↑ ↓</strong> para definir quem é <strong>1º, 2º, 3º…</strong> em cada URL e clique em <strong>Salvar alterações</strong>. <strong>Equalização automática (leitura do dia):</strong> mesmo em rodízio de 10 em 10, se você ativar ou adicionar um número com menos fichas hoje do que os outros, o sistema completa a diferença primeiro até igualar e depois retoma a ordem normal.
+                    Crie equipes com URLs próprias, use os mesmos números em mais de um link (clicando em <strong>Duplicar</strong> ou <strong>+ Copiar p/ equipe</strong>), arraste ou use <strong>↑ ↓</strong> para definir quem é <strong>1º, 2º, 3º…</strong> em cada URL e clique em <strong>Salvar alterações</strong>. <strong>Distribuição em ordem igual por firma:</strong> cada firma distribui o lote configurado exatamente na ordem (1º recebe X → pula para 2º → 3º → 4º…). Se um número novo ou reativado entrar atrás no dia, ele recebe até 1 lote inicial primeiro e, em seguida, a firma retoma a ordem igual para todos.
                   </p>
                 </div>
                 {renderLiveControls()}
@@ -2040,7 +2040,7 @@ export default function AttendantPanel() {
                                         {isReceivingNow && teamQueue?.receivingNow && (
                                           <span className={`queue-badge ${teamQueue.receivingNow.equalizing ? "equalizing" : "now"}`}>
                                             {teamQueue.receivingNow.equalizing
-                                              ? `⚡ Equalizando (faltam ${teamQueue.receivingNow.missingToEqualize})`
+                                              ? `⚡ Entrada inicial (faltam ${teamQueue.receivingNow.missingToEqualize})`
                                               : teamQueue.batchSize > 1
                                               ? `● Chegando (${teamQueue.receivingNow.usedInBatch}/${teamQueue.batchSize})`
                                               : "● Chegando agora"}

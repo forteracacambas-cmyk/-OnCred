@@ -71,6 +71,7 @@ function devApiPlugin() {
     generalUsed: 0,
     dayKey: getSpDayKey(),
     devDeliveries: {} as Record<string, number>,
+    devCatchup: [] as Array<{ scope_key: string; agent_id: string; remaining: number; created_at: number }>,
     devSessions: [] as Array<{ token: string; expires: number }>,
   });
 
@@ -83,6 +84,7 @@ function devApiPlugin() {
             ...defaultState(),
             ...parsed,
             devDeliveries: parsed.devDeliveries && typeof parsed.devDeliveries === 'object' ? parsed.devDeliveries : {},
+            devCatchup: Array.isArray(parsed.devCatchup) ? parsed.devCatchup : [],
             devSessions: Array.isArray(parsed.devSessions) ? parsed.devSessions : [],
           };
         }
@@ -97,6 +99,7 @@ function devApiPlugin() {
     if (state.dayKey !== today) {
       state.dayKey = today;
       state.devDeliveries = {};
+      state.devCatchup = [];
     }
   };
   const persistState = () => {
@@ -110,7 +113,25 @@ function devApiPlugin() {
     String(req.headers?.cookie || '')
       .match(/(?:^|;\s*)oncred_admin=([0-9a-f-]{16,120})(?:;|$)/i)?.[1] || '';
 
+  const pruneScopeCatchups = (scopeKey: string, pool: any[]) => {
+    const poolIds = new Set(pool.map((a: any) => a.id));
+    state.devCatchup = (state.devCatchup || []).filter((c: any) => {
+      if (c.scope_key !== scopeKey) return true;
+      if (Number(c.remaining) <= 0 || !poolIds.has(c.agent_id)) return false;
+      const aCnt = Number(state.devDeliveries[c.agent_id] || 0);
+      let maxOther = 0;
+      for (const b of pool) {
+        if (b.id !== c.agent_id) {
+          const bc = Number(state.devDeliveries[b.id] || 0);
+          if (bc > maxOther) maxOther = bc;
+        }
+      }
+      return aCnt < maxOther;
+    });
+  };
+
   const computeDevQueuePreview = (
+    scopeKey: string,
     pool: any[],
     batchSize: number,
     cursorAgentId: string | null | undefined,
@@ -136,58 +157,125 @@ function devApiPlugin() {
       counts.set(a.id, c);
       if (c > initialMaxToday) initialMaxToday = c;
     }
+    const poolById = new Map(sortedPool.map((a) => [a.id, a]));
     const scopeById = new Map<string, any>();
     for (const a of allAgentsInScope) scopeById.set(a.id, a);
     for (const a of sortedPool) scopeById.set(a.id, a);
 
-    const simulateOneStep = (curId: string | null | undefined, curUsed: number) => {
-      let minC = Infinity;
-      let maxC = -Infinity;
-      for (const a of sortedPool) {
-        const v = counts.get(a.id) || 0;
-        if (v < minC) minC = v;
-        if (v > maxC) maxC = v;
+    const catchupQueue = (state.devCatchup || [])
+      .filter((c: any) => c.scope_key === scopeKey && Number(c.remaining) > 0 && poolById.has(c.agent_id))
+      .map((c: any) => ({
+        agent: poolById.get(c.agent_id),
+        remaining: Number(c.remaining),
+        createdAt: Number(c.created_at || 0),
+      }))
+      .sort((a: any, b: any) => {
+        if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
+        return reverse
+          ? (b.agent.position - a.agent.position) || String(a.agent.id).localeCompare(String(b.agent.id))
+          : (a.agent.position - b.agent.position) || String(a.agent.id).localeCompare(String(b.agent.id));
+      });
+
+    const pruneSim = () => {
+      for (let i = catchupQueue.length - 1; i >= 0; i--) {
+        const item = catchupQueue[i];
+        let maxOther = 0;
+        for (const a of sortedPool) {
+          if (a.id !== item.agent.id) {
+            const val = counts.get(a.id) || 0;
+            if (val > maxOther) maxOther = val;
+          }
+        }
+        if (item.remaining <= 0 || (counts.get(item.agent.id) || 0) >= maxOther) {
+          catchupQueue.splice(i, 1);
+        }
       }
-      const allEqual = minC === maxC;
-      const activeCursor = curId ? sortedPool.find((a) => a.id === curId) : undefined;
-      if (curUsed < cleanBatch && activeCursor && !(curUsed > 0 && allEqual)) {
-        return { selected: activeCursor, nextCursor: activeCursor.id, nextUsed: curUsed + 1, inBatch: true };
+    };
+    pruneSim();
+
+    let simCursorId = cursorAgentId || null;
+    let simUsed = cleanUsed;
+
+    const stepOne = () => {
+      pruneSim();
+      if (catchupQueue.length > 0) {
+        const head = catchupQueue[0];
+        let maxOther = 0;
+        for (const a of sortedPool) {
+          if (a.id !== head.agent.id) {
+            const val = counts.get(a.id) || 0;
+            if (val > maxOther) maxOther = val;
+          }
+        }
+        const effRem = Math.min(head.remaining, Math.max(0, maxOther - (counts.get(head.agent.id) || 0)));
+        counts.set(head.agent.id, (counts.get(head.agent.id) || 0) + 1);
+        head.remaining -= 1;
+        pruneSim();
+        if (catchupQueue.length === 0) {
+          simCursorId = null;
+          simUsed = 0;
+        }
+        return {
+          selected: head.agent,
+          equalizing: true,
+          remainingBeforeStep: effRem,
+          usedInBatch: Math.max(0, Math.min(cleanBatch, cleanBatch - effRem)),
+        };
       }
-      const tied = sortedPool.filter((a) => (counts.get(a.id) || 0) === minC);
-      const cursorRef = curId ? scopeById.get(curId) : undefined;
-      let chosen = tied[0];
+
+      const activeCursor = simCursorId ? poolById.get(simCursorId) : undefined;
+      if (simUsed < cleanBatch && activeCursor) {
+        const usedBefore = simUsed;
+        simUsed = usedBefore + 1;
+        counts.set(activeCursor.id, (counts.get(activeCursor.id) || 0) + 1);
+        return {
+          selected: activeCursor,
+          equalizing: false,
+          remainingBeforeStep: cleanBatch - usedBefore,
+          usedInBatch: usedBefore,
+        };
+      }
+
+      const cursorRef = simCursorId ? scopeById.get(simCursorId) : undefined;
+      let chosen = sortedPool[0];
       if (cursorRef) {
-        const after = tied.find((a) =>
+        const after = sortedPool.find((a) =>
           reverse
             ? a.position < cursorRef.position || (a.position === cursorRef.position && String(a.id) < String(cursorRef.id))
             : a.position > cursorRef.position || (a.position === cursorRef.position && String(a.id) > String(cursorRef.id)),
         );
         if (after) chosen = after;
       }
-      return { selected: chosen, nextCursor: chosen.id, nextUsed: 1, inBatch: false };
+      simCursorId = chosen.id;
+      simUsed = 1;
+      counts.set(chosen.id, (counts.get(chosen.id) || 0) + 1);
+      return {
+        selected: chosen,
+        equalizing: false,
+        remainingBeforeStep: cleanBatch,
+        usedInBatch: 0,
+      };
     };
 
-    const firstStep = simulateOneStep(cursorAgentId || null, cleanUsed);
+    const firstStep = stepOne();
     const firstAgent = firstStep.selected;
-    const initialFirstToday = counts.get(firstAgent.id) || 0;
-    const usedInBatch = firstStep.inBatch ? cleanUsed : 0;
+    const initialFirstToday = Number(state.devDeliveries[firstAgent.id] || 0);
+    const initialMissing = firstStep.equalizing ? firstStep.remainingBeforeStep : 0;
 
-    let curId = firstStep.nextCursor;
-    let curUsed = firstStep.nextUsed;
-    counts.set(firstAgent.id, initialFirstToday + 1);
     let consecutiveCount = 1;
     let nextCandidate: any = null;
     if (sortedPool.length > 1) {
-      const maxSimSteps = Math.max(cleanBatch, initialMaxToday - initialFirstToday + 1) + 5;
+      const maxSimSteps = cleanBatch * 2 + 10;
       for (let step = 0; step < maxSimSteps && step < 2500; step++) {
-        const nextStep = simulateOneStep(curId, curUsed);
+        const nextStep = stepOne();
         if (nextStep.selected.id !== firstAgent.id) {
-          nextCandidate = nextStep.selected;
+          nextCandidate = {
+            agent: nextStep.selected,
+            equalizing: nextStep.equalizing,
+            missing: nextStep.equalizing ? nextStep.remainingBeforeStep : 0,
+          };
           break;
         }
-        counts.set(firstAgent.id, (counts.get(firstAgent.id) || 0) + 1);
-        curId = nextStep.nextCursor;
-        curUsed = nextStep.nextUsed;
         consecutiveCount++;
       }
     }
@@ -201,25 +289,26 @@ function devApiPlugin() {
         name: firstAgent.name,
         phone: firstAgent.phone,
         todayCount: initialFirstToday,
-        usedInBatch,
+        usedInBatch: firstStep.usedInBatch,
         batchSize: cleanBatch,
         remainingToSwitch: sortedPool.length > 1 ? consecutiveCount : null,
-        equalizing: initialFirstToday < initialMaxToday,
-        missingToEqualize: Math.max(0, initialMaxToday - initialFirstToday),
+        equalizing: firstStep.equalizing,
+        missingToEqualize: initialMissing,
       },
       nextUp: nextCandidate
         ? {
-            id: nextCandidate.id,
-            name: nextCandidate.name,
-            todayCount: Number(state.devDeliveries[nextCandidate.id] || 0),
-            equalizing: Number(state.devDeliveries[nextCandidate.id] || 0) < initialMaxToday,
-            missingToEqualize: Math.max(0, initialMaxToday - Number(state.devDeliveries[nextCandidate.id] || 0)),
+            id: nextCandidate.agent.id,
+            name: nextCandidate.agent.name,
+            todayCount: Number(state.devDeliveries[nextCandidate.agent.id] || 0),
+            equalizing: nextCandidate.equalizing,
+            missingToEqualize: nextCandidate.missing,
           }
         : null,
     };
   };
 
-  const selectEqualizedAgent = (
+  const selectOrderedAgent = (
+    scopeKey: string,
     pool: any[],
     cursorId: string | null | undefined,
     used: number,
@@ -227,29 +316,60 @@ function devApiPlugin() {
     reverse = false,
   ) => {
     ensureTodayCounters();
+    const cleanBatch = Math.max(1, Number(batchSize) || 1);
     const sorted = [...pool].sort((a, b) =>
       reverse
         ? (b.position - a.position) || String(b.id).localeCompare(String(a.id))
         : (a.position - b.position) || String(a.id).localeCompare(String(b.id)),
     );
-    const counts = sorted.map((a) => Number(state.devDeliveries[a.id] || 0));
-    const allEqual = counts.every((c) => c === counts[0]);
+    const poolById = new Map(sorted.map((a) => [a.id, a]));
+    pruneScopeCatchups(scopeKey, sorted);
+
+    const activeCatchups = (state.devCatchup || [])
+      .filter((c: any) => c.scope_key === scopeKey && Number(c.remaining) > 0 && poolById.has(c.agent_id))
+      .sort((a: any, b: any) => {
+        if ((a.created_at || 0) !== (b.created_at || 0)) return (a.created_at || 0) - (b.created_at || 0);
+        const agA = poolById.get(a.agent_id);
+        const agB = poolById.get(b.agent_id);
+        return reverse
+          ? (agB.position - agA.position) || String(agA.id).localeCompare(String(agB.id))
+          : (agA.position - agB.position) || String(agA.id).localeCompare(String(agB.id));
+      });
+
+    if (activeCatchups.length > 0) {
+      const head = activeCatchups[0];
+      const chosen = poolById.get(head.agent_id);
+      head.remaining = Number(head.remaining) - 1;
+      state.devDeliveries[chosen.id] = (state.devDeliveries[chosen.id] || 0) + 1;
+      state.devCatchup = (state.devCatchup || []).filter(
+        (c: any) => !(c.scope_key === scopeKey && Number(c.remaining) <= 0),
+      );
+      const stillHasCatchup = (state.devCatchup || []).some(
+        (c: any) => c.scope_key === scopeKey && Number(c.remaining) > 0,
+      );
+      return {
+        selected: chosen,
+        nextCursor: stillHasCatchup ? (cursorId || null) : null,
+        nextUsed: stillHasCatchup ? used : 0,
+      };
+    }
+
     const activeCursor = cursorId ? sorted.find((a) => a.id === cursorId) : undefined;
-    if (used < batchSize && activeCursor && !(used > 0 && allEqual)) {
+    if (used < cleanBatch && activeCursor) {
+      state.devDeliveries[activeCursor.id] = (state.devDeliveries[activeCursor.id] || 0) + 1;
       return { selected: activeCursor, nextCursor: activeCursor.id, nextUsed: used + 1 };
     }
-    const minCount = Math.min(...sorted.map((a) => Number(state.devDeliveries[a.id] || 0)));
-    const tied = sorted.filter((a) => Number(state.devDeliveries[a.id] || 0) === minCount);
     const cursorRef = cursorId ? state.devAgents.find((a: any) => a.id === cursorId) : undefined;
-    let chosen = tied[0];
+    let chosen = sorted[0];
     if (cursorRef) {
-      const after = tied.find((a) =>
+      const after = sorted.find((a) =>
         reverse
           ? a.position < cursorRef.position || (a.position === cursorRef.position && String(a.id) < String(cursorRef.id))
           : a.position > cursorRef.position || (a.position === cursorRef.position && String(a.id) > String(cursorRef.id)),
       );
       if (after) chosen = after;
     }
+    state.devDeliveries[chosen.id] = (state.devDeliveries[chosen.id] || 0) + 1;
     return { selected: chosen, nextCursor: chosen.id, nextUsed: 1 };
   };
 
@@ -364,7 +484,8 @@ function devApiPlugin() {
               res.end(JSON.stringify({ error: `Nenhum atendente disponível na equipe ${teamObj.name} no momento.` }));
               return;
             }
-            const pick = selectEqualizedAgent(
+            const pick = selectOrderedAgent(
+              teamObj.id,
               pool,
               teamObj.cursorAgent,
               Number(teamObj.used || 0),
@@ -374,7 +495,6 @@ function devApiPlugin() {
             selected = pick.selected;
             teamObj.cursorAgent = pick.nextCursor;
             teamObj.used = pick.nextUsed;
-            state.devDeliveries[selected.id] = (state.devDeliveries[selected.id] || 0) + 1;
             persistState();
           } else {
             const pool = state.devAgents.filter((a: any) => !a.deleted && a.active && !a.team_id);
@@ -383,7 +503,8 @@ function devApiPlugin() {
               res.end(JSON.stringify({ error: "Nenhum atendente disponível no momento." }));
               return;
             }
-            const pick = selectEqualizedAgent(
+            const pick = selectOrderedAgent(
+              '__general__',
               pool,
               state.generalCursorAgent,
               Number(state.generalUsed || 0),
@@ -393,7 +514,6 @@ function devApiPlugin() {
             selected = pick.selected;
             state.generalCursorAgent = pick.nextCursor;
             state.generalUsed = pick.nextUsed;
-            state.devDeliveries[selected.id] = (state.devDeliveries[selected.id] || 0) + 1;
             persistState();
           }
 
@@ -457,6 +577,7 @@ function devApiPlugin() {
           state.generalCursorAgent = null;
           state.generalUsed = 0;
           state.devDeliveries = {};
+          state.devCatchup = [];
           state.devTeams.forEach((t: any) => { t.cursorAgent = null; t.used = 0; });
           persistState();
           res.end(JSON.stringify({ ok: true }));
@@ -598,9 +719,71 @@ function devApiPlugin() {
             }
           }
 
+          const prevAgentsMap = new Map(state.devAgents.filter((a: any) => !a.deleted).map((a: any) => [a.id, a]));
+          const prevCatchupMap = new Map(
+            (state.devCatchup || []).map((c: any) => [`${c.scope_key}:${c.agent_id}`, c]),
+          );
+          ensureTodayCounters();
+          const nextCatchup: Array<{ scope_key: string; agent_id: string; remaining: number; created_at: number }> = [];
+          const devScopes = [
+            {
+              scopeKey: '__general__',
+              batchSize: nextBatch,
+              pool: newAgents.filter((a: any) => a.active === 1 && !a.team_id),
+              isMirrored: false,
+            },
+            ...newTeams.map((t: any) => {
+              const isMirrored = t.sync_mode === 'general_same' || t.sync_mode === 'general_reverse';
+              return {
+                scopeKey: t.id,
+                batchSize: Number(t.batch_size || 1),
+                pool: t.active
+                  ? newAgents.filter((a: any) => a.active === 1 && (isMirrored ? !a.team_id : a.team_id === t.id))
+                  : [],
+                isMirrored,
+              };
+            }),
+          ];
+          let seq = Date.now();
+          for (const sc of devScopes) {
+            if (sc.pool.length < 2) continue;
+            for (const a of sc.pool) {
+              const aToday = Number(state.devDeliveries[a.id] || 0);
+              let maxOther = 0;
+              for (const b of sc.pool) {
+                if (b.id !== a.id) {
+                  const bt = Number(state.devDeliveries[b.id] || 0);
+                  if (bt > maxOther) maxOther = bt;
+                }
+              }
+              const gap = Math.max(0, maxOther - aToday);
+              if (gap <= 0) continue;
+              const prevA: any = prevAgentsMap.get(a.id);
+              const prevScopeKey = prevA ? (prevA.team_id || '__general__') : null;
+              const enteredScope =
+                !prevA ||
+                prevA.active === 0 ||
+                (!sc.isMirrored && prevScopeKey !== sc.scopeKey) ||
+                (sc.isMirrored && !!prevA.team_id);
+              const prevC: any = prevCatchupMap.get(`${sc.scopeKey}:${a.id}`);
+              let remaining = 0;
+              let createdAt = seq++;
+              if (enteredScope) {
+                remaining = Math.min(gap, sc.batchSize);
+              } else if (prevC && Number(prevC.remaining) > 0) {
+                remaining = Math.min(Number(prevC.remaining), gap, sc.batchSize);
+                createdAt = Number(prevC.created_at || createdAt);
+              }
+              if (remaining > 0) {
+                nextCatchup.push({ scope_key: sc.scopeKey, agent_id: a.id, remaining, created_at: createdAt });
+              }
+            }
+          }
+
           state.batchSize = nextBatch;
           state.devTeams = newTeams;
           state.devAgents = newAgents;
+          state.devCatchup = nextCatchup;
           persistState();
           res.end(JSON.stringify({
             ok: true,
@@ -706,6 +889,52 @@ function devApiPlugin() {
           }
         };
 
+        const addCatchupForDevAgent = (agentObj: any, targetTeamId: string | null) => {
+          ensureTodayCounters();
+          state.devCatchup = (state.devCatchup || []).filter((c: any) => c.agent_id !== agentObj.id);
+          if (!agentObj.active) return;
+          const nowTs = Date.now();
+          const aToday = Number(state.devDeliveries[agentObj.id] || 0);
+          if (!targetTeamId) {
+            const others = state.devAgents.filter((a: any) => !a.deleted && a.active && !a.team_id && a.id !== agentObj.id);
+            const maxOther = others.reduce((m: number, a: any) => Math.max(m, Number(state.devDeliveries[a.id] || 0)), 0);
+            const gap = Math.max(0, maxOther - aToday);
+            if (gap > 0) {
+              state.devCatchup.push({
+                scope_key: '__general__',
+                agent_id: agentObj.id,
+                remaining: Math.min(gap, Number(state.batchSize || 1)),
+                created_at: nowTs,
+              });
+              for (const t of state.devTeams.filter((x: any) => !x.deleted && x.active)) {
+                const sm = normalizeSync(t.sync_mode);
+                if (sm === 'general_same' || sm === 'general_reverse') {
+                  state.devCatchup.push({
+                    scope_key: t.id,
+                    agent_id: agentObj.id,
+                    remaining: Math.min(gap, Number(t.batch_size || 1)),
+                    created_at: nowTs,
+                  });
+                }
+              }
+            }
+          } else {
+            const tm = state.devTeams.find((t: any) => t.id === targetTeamId && !t.deleted && t.active);
+            if (!tm) return;
+            const others = state.devAgents.filter((a: any) => !a.deleted && a.active && a.team_id === targetTeamId && a.id !== agentObj.id);
+            const maxOther = others.reduce((m: number, a: any) => Math.max(m, Number(state.devDeliveries[a.id] || 0)), 0);
+            const gap = Math.max(0, maxOther - aToday);
+            if (gap > 0) {
+              state.devCatchup.push({
+                scope_key: targetTeamId,
+                agent_id: agentObj.id,
+                remaining: Math.min(gap, Number(tm.batch_size || 1)),
+                created_at: nowTs,
+              });
+            }
+          }
+        };
+
         if (pathname === '/api/admin/agents/move' && req.method === 'POST') {
           const data = await readJson(req);
           const agent = state.devAgents.find((a: any) => a.id === data.agentId && !a.deleted);
@@ -722,7 +951,10 @@ function devApiPlugin() {
             }
             agent.team_id = nextTeam;
             resetScopeCursor(prevTeam);
-            if (nextTeam !== prevTeam) resetScopeCursor(nextTeam);
+            if (nextTeam !== prevTeam) {
+              resetScopeCursor(nextTeam);
+              addCatchupForDevAgent(agent, nextTeam);
+            }
           }
           persistState();
           res.end(JSON.stringify({ ok: true }));
@@ -744,7 +976,7 @@ function devApiPlugin() {
             res.end(JSON.stringify({ error: "Esse telefone já está cadastrado nessa equipe." }));
             return;
           }
-          state.devAgents.push({
+          const createdAgent = {
             id: crypto.randomUUID(),
             name: String(data.name || '').trim(),
             phone,
@@ -752,8 +984,10 @@ function devApiPlugin() {
             active: 1,
             deleted: 0,
             team_id: targetTeam,
-          });
+          };
+          state.devAgents.push(createdAgent);
           resetScopeCursor(targetTeam);
+          addCatchupForDevAgent(createdAgent, targetTeam);
           persistState();
           res.end(JSON.stringify({ ok: true }));
           return;
@@ -770,6 +1004,7 @@ function devApiPlugin() {
           if (req.method === 'DELETE') {
             agent.deleted = 1;
             agent.active = 0;
+            state.devCatchup = (state.devCatchup || []).filter((c: any) => c.agent_id !== id);
             persistState();
             res.end(JSON.stringify({ ok: true }));
             return;
@@ -798,9 +1033,15 @@ function devApiPlugin() {
             agent.active = nextActive;
             agent.position = nextPos;
             agent.team_id = nextTeam;
+            if (!nextActive) {
+              state.devCatchup = (state.devCatchup || []).filter((c: any) => c.agent_id !== id);
+            }
             if (prevActive !== nextActive || prevPos !== nextPos || prevTeam !== nextTeam) {
               resetScopeCursor(prevTeam);
               if (nextTeam !== prevTeam) resetScopeCursor(nextTeam);
+            }
+            if (nextActive === 1 && (prevActive === 0 || prevTeam !== nextTeam)) {
+              addCatchupForDevAgent(agent, nextTeam);
             }
             persistState();
             res.end(JSON.stringify({ ok: true }));
@@ -814,6 +1055,7 @@ function devApiPlugin() {
           const liveAgents = state.devAgents.filter((a: any) => !a.deleted);
           const generalScope = liveAgents.filter((a: any) => !a.team_id);
           const generalQueue = computeDevQueuePreview(
+            '__general__',
             generalScope.filter((a: any) => a.active),
             Number(state.batchSize || 1),
             state.generalCursorAgent,
@@ -828,6 +1070,7 @@ function devApiPlugin() {
             const scope = isMirrored ? generalScope : liveAgents.filter((a: any) => a.team_id === t.id);
             const pool = !t.active ? [] : scope.filter((a: any) => a.active);
             teamQueues[t.id] = computeDevQueuePreview(
+              t.id,
               pool,
               Number(t.batch_size || 1),
               t.cursorAgent,

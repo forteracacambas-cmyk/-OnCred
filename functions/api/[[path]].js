@@ -75,53 +75,61 @@ const ROUTE_ASSIGN_TRIGGER_SQL = `CREATE TRIGGER route_assign AFTER INSERT ON ro
 BEGIN
  INSERT INTO visitors(id,event_id,created_at) VALUES(NEW.visitor_id,NEW.event_id,NEW.at) ON CONFLICT(id) DO NOTHING;
 
+ DELETE FROM agent_catchup
+ WHERE scope_key=COALESCE(NEW.team_id,'__general__')
+  AND (
+   remaining<=0
+   OR NOT EXISTS(
+    SELECT 1 FROM agents a
+    WHERE a.id=agent_catchup.agent_id AND a.active=1 AND a.deleted=0
+     AND CASE
+      WHEN NEW.team_id IS NULL THEN a.team_id IS NULL
+      WHEN (SELECT sync_mode FROM teams WHERE id=NEW.team_id) IN ('general_same','general_reverse') THEN a.team_id IS NULL
+      ELSE a.team_id=NEW.team_id
+     END
+   )
+   OR (
+    SELECT COUNT(*) FROM deliveries d
+    WHERE d.agent_id=agent_catchup.agent_id
+     AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000
+   ) >= COALESCE((
+    SELECT MAX(
+     (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=b.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
+    )
+    FROM agents b
+    WHERE b.id!=agent_catchup.agent_id AND b.active=1 AND b.deleted=0
+     AND CASE
+      WHEN NEW.team_id IS NULL THEN b.team_id IS NULL
+      WHEN (SELECT sync_mode FROM teams WHERE id=NEW.team_id) IN ('general_same','general_reverse') THEN b.team_id IS NULL
+      ELSE b.team_id=NEW.team_id
+     END
+   ), 0)
+  );
+
  UPDATE settings SET
   cursor_agent=CASE
    WHEN used<batch_size
     AND EXISTS(SELECT 1 FROM agents WHERE id=cursor_agent AND active=1 AND deleted=0 AND team_id IS NULL)
-    AND (used=0 OR EXISTS(
-     SELECT 1 FROM agents b
-     WHERE b.active=1 AND b.deleted=0 AND b.team_id IS NULL
-      AND (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=b.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
-       !=(SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=cursor_agent AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
-    ))
    THEN cursor_agent
    ELSE COALESCE(
     (SELECT a.id FROM agents a
      WHERE a.active=1 AND a.deleted=0 AND a.team_id IS NULL
-      AND NOT EXISTS(
-       SELECT 1 FROM agents b
-       WHERE b.active=1 AND b.deleted=0 AND b.team_id IS NULL
-        AND (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=b.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
-          < (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=a.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
-      )
       AND (a.position>COALESCE((SELECT position FROM agents WHERE id=cursor_agent AND team_id IS NULL),-1)
        OR (a.position=(SELECT position FROM agents WHERE id=cursor_agent AND team_id IS NULL) AND a.id>cursor_agent))
      ORDER BY a.position ASC,a.id ASC LIMIT 1),
     (SELECT a.id FROM agents a
      WHERE a.active=1 AND a.deleted=0 AND a.team_id IS NULL
-      AND NOT EXISTS(
-       SELECT 1 FROM agents b
-       WHERE b.active=1 AND b.deleted=0 AND b.team_id IS NULL
-        AND (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=b.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
-          < (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=a.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
-      )
      ORDER BY a.position ASC,a.id ASC LIMIT 1)
    )
   END,
   used=CASE
    WHEN used<batch_size
     AND EXISTS(SELECT 1 FROM agents WHERE id=cursor_agent AND active=1 AND deleted=0 AND team_id IS NULL)
-    AND (used=0 OR EXISTS(
-     SELECT 1 FROM agents b
-     WHERE b.active=1 AND b.deleted=0 AND b.team_id IS NULL
-      AND (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=b.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
-       !=(SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=cursor_agent AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
-    ))
    THEN used ELSE 0
   END
  WHERE id=1
   AND NEW.team_id IS NULL
+  AND NOT EXISTS(SELECT 1 FROM agent_catchup WHERE scope_key='__general__' AND remaining>0)
   AND NOT EXISTS(SELECT 1 FROM visitors v JOIN agents a ON a.id=v.agent_id WHERE v.id=NEW.visitor_id AND a.active=1 AND a.deleted=0 AND a.team_id IS NULL);
 
  UPDATE teams SET
@@ -130,23 +138,11 @@ BEGIN
     CASE
      WHEN used<batch_size
       AND EXISTS(SELECT 1 FROM agents WHERE id=cursor_agent AND active=1 AND deleted=0 AND team_id IS NULL)
-      AND (used=0 OR EXISTS(
-       SELECT 1 FROM agents b
-       WHERE b.active=1 AND b.deleted=0 AND b.team_id IS NULL
-        AND (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=b.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
-         !=(SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=cursor_agent AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
-      ))
      THEN cursor_agent
      WHEN sync_mode='general_reverse' THEN
       COALESCE(
        (SELECT a.id FROM agents a
         WHERE a.active=1 AND a.deleted=0 AND a.team_id IS NULL
-         AND NOT EXISTS(
-          SELECT 1 FROM agents b
-          WHERE b.active=1 AND b.deleted=0 AND b.team_id IS NULL
-           AND (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=b.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
-             < (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=a.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
-         )
          AND (
           (SELECT position FROM agents WHERE id=cursor_agent AND team_id IS NULL) IS NULL
           OR a.position<(SELECT position FROM agents WHERE id=cursor_agent AND team_id IS NULL)
@@ -155,35 +151,17 @@ BEGIN
         ORDER BY a.position DESC,a.id DESC LIMIT 1),
        (SELECT a.id FROM agents a
         WHERE a.active=1 AND a.deleted=0 AND a.team_id IS NULL
-         AND NOT EXISTS(
-          SELECT 1 FROM agents b
-          WHERE b.active=1 AND b.deleted=0 AND b.team_id IS NULL
-           AND (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=b.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
-             < (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=a.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
-         )
         ORDER BY a.position DESC,a.id DESC LIMIT 1)
       )
      ELSE
       COALESCE(
        (SELECT a.id FROM agents a
         WHERE a.active=1 AND a.deleted=0 AND a.team_id IS NULL
-         AND NOT EXISTS(
-          SELECT 1 FROM agents b
-          WHERE b.active=1 AND b.deleted=0 AND b.team_id IS NULL
-           AND (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=b.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
-             < (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=a.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
-         )
          AND (a.position>COALESCE((SELECT position FROM agents WHERE id=cursor_agent AND team_id IS NULL),-1)
           OR (a.position=(SELECT position FROM agents WHERE id=cursor_agent AND team_id IS NULL) AND a.id>cursor_agent))
         ORDER BY a.position ASC,a.id ASC LIMIT 1),
        (SELECT a.id FROM agents a
         WHERE a.active=1 AND a.deleted=0 AND a.team_id IS NULL
-         AND NOT EXISTS(
-          SELECT 1 FROM agents b
-          WHERE b.active=1 AND b.deleted=0 AND b.team_id IS NULL
-           AND (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=b.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
-             < (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=a.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
-         )
         ORDER BY a.position ASC,a.id ASC LIMIT 1)
       )
     END
@@ -191,33 +169,15 @@ BEGIN
     CASE
      WHEN used<batch_size
       AND EXISTS(SELECT 1 FROM agents WHERE id=cursor_agent AND active=1 AND deleted=0 AND team_id=NEW.team_id)
-      AND (used=0 OR EXISTS(
-       SELECT 1 FROM agents b
-       WHERE b.active=1 AND b.deleted=0 AND b.team_id=NEW.team_id
-        AND (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=b.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
-         !=(SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=cursor_agent AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
-      ))
      THEN cursor_agent
      ELSE COALESCE(
       (SELECT a.id FROM agents a
        WHERE a.active=1 AND a.deleted=0 AND a.team_id=NEW.team_id
-        AND NOT EXISTS(
-         SELECT 1 FROM agents b
-         WHERE b.active=1 AND b.deleted=0 AND b.team_id=NEW.team_id
-          AND (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=b.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
-            < (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=a.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
-        )
         AND (a.position>COALESCE((SELECT position FROM agents WHERE id=cursor_agent AND team_id=NEW.team_id),-1)
          OR (a.position=(SELECT position FROM agents WHERE id=cursor_agent AND team_id=NEW.team_id) AND a.id>cursor_agent))
        ORDER BY a.position ASC,a.id ASC LIMIT 1),
       (SELECT a.id FROM agents a
        WHERE a.active=1 AND a.deleted=0 AND a.team_id=NEW.team_id
-        AND NOT EXISTS(
-         SELECT 1 FROM agents b
-         WHERE b.active=1 AND b.deleted=0 AND b.team_id=NEW.team_id
-          AND (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=b.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
-            < (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=a.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
-        )
        ORDER BY a.position ASC,a.id ASC LIMIT 1)
      )
     END
@@ -226,27 +186,16 @@ BEGIN
    WHEN sync_mode IN ('general_same','general_reverse')
     AND used<batch_size
     AND EXISTS(SELECT 1 FROM agents WHERE id=cursor_agent AND active=1 AND deleted=0 AND team_id IS NULL)
-    AND (used=0 OR EXISTS(
-     SELECT 1 FROM agents b
-     WHERE b.active=1 AND b.deleted=0 AND b.team_id IS NULL
-      AND (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=b.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
-       !=(SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=cursor_agent AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
-    ))
    THEN used
    WHEN sync_mode='independent'
     AND used<batch_size
     AND EXISTS(SELECT 1 FROM agents WHERE id=cursor_agent AND active=1 AND deleted=0 AND team_id=NEW.team_id)
-    AND (used=0 OR EXISTS(
-     SELECT 1 FROM agents b
-     WHERE b.active=1 AND b.deleted=0 AND b.team_id=NEW.team_id
-      AND (SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=b.id AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
-       !=(SELECT COUNT(*) FROM deliveries d WHERE d.agent_id=cursor_agent AND d.created_at>=((NEW.at-10800000)/86400000)*86400000+10800000)
-    ))
    THEN used
    ELSE 0
   END
  WHERE id=NEW.team_id
   AND NEW.team_id IS NOT NULL
+  AND NOT EXISTS(SELECT 1 FROM agent_catchup WHERE scope_key=NEW.team_id AND remaining>0)
   AND NOT EXISTS(
    SELECT 1 FROM visitors v JOIN agents a ON a.id=v.agent_id
    WHERE v.id=NEW.visitor_id AND a.active=1 AND a.deleted=0
@@ -257,10 +206,25 @@ BEGIN
   );
 
  UPDATE visitors SET
-  agent_id=CASE
-   WHEN NEW.team_id IS NULL THEN (SELECT cursor_agent FROM settings WHERE id=1)
-   ELSE (SELECT cursor_agent FROM teams WHERE id=NEW.team_id)
-  END,
+  agent_id=COALESCE(
+   (SELECT c.agent_id FROM agent_catchup c
+    JOIN agents a ON a.id=c.agent_id
+    WHERE c.scope_key=COALESCE(NEW.team_id,'__general__')
+     AND c.remaining>0 AND a.active=1 AND a.deleted=0
+     AND CASE
+      WHEN NEW.team_id IS NULL THEN a.team_id IS NULL
+      WHEN (SELECT sync_mode FROM teams WHERE id=NEW.team_id) IN ('general_same','general_reverse') THEN a.team_id IS NULL
+      ELSE a.team_id=NEW.team_id
+     END
+    ORDER BY c.created_at ASC,
+     CASE WHEN NEW.team_id IS NOT NULL AND (SELECT sync_mode FROM teams WHERE id=NEW.team_id)='general_reverse' THEN -a.position ELSE a.position END ASC,
+     a.id ASC
+    LIMIT 1),
+   CASE
+    WHEN NEW.team_id IS NULL THEN (SELECT cursor_agent FROM settings WHERE id=1)
+    ELSE (SELECT cursor_agent FROM teams WHERE id=NEW.team_id)
+   END
+  ),
   route_token=NEW.id
  WHERE id=NEW.visitor_id
   AND NOT EXISTS(
@@ -281,15 +245,36 @@ BEGIN
 
  UPDATE settings SET used=used+1
  WHERE id=1 AND NEW.team_id IS NULL
-  AND EXISTS(SELECT 1 FROM visitors WHERE id=NEW.visitor_id AND route_token=NEW.id);
+  AND EXISTS(SELECT 1 FROM visitors WHERE id=NEW.visitor_id AND route_token=NEW.id)
+  AND NOT EXISTS(SELECT 1 FROM agent_catchup WHERE scope_key='__general__');
 
  UPDATE teams SET used=used+1
  WHERE id=NEW.team_id AND NEW.team_id IS NOT NULL
+  AND EXISTS(SELECT 1 FROM visitors WHERE id=NEW.visitor_id AND route_token=NEW.id)
+  AND NOT EXISTS(SELECT 1 FROM agent_catchup WHERE scope_key=NEW.team_id);
+
+ UPDATE agent_catchup SET remaining=remaining-1
+ WHERE scope_key=COALESCE(NEW.team_id,'__general__')
+  AND agent_id=(SELECT agent_id FROM visitors WHERE id=NEW.visitor_id)
   AND EXISTS(SELECT 1 FROM visitors WHERE id=NEW.visitor_id AND route_token=NEW.id);
+
+ UPDATE settings SET cursor_agent=NULL, used=0
+ WHERE id=1 AND NEW.team_id IS NULL
+  AND EXISTS(SELECT 1 FROM agent_catchup WHERE scope_key='__general__' AND remaining<=0)
+  AND NOT EXISTS(SELECT 1 FROM agent_catchup WHERE scope_key='__general__' AND remaining>0);
+
+ UPDATE teams SET cursor_agent=NULL, used=0
+ WHERE id=NEW.team_id AND NEW.team_id IS NOT NULL
+  AND EXISTS(SELECT 1 FROM agent_catchup WHERE scope_key=NEW.team_id AND remaining<=0)
+  AND NOT EXISTS(SELECT 1 FROM agent_catchup WHERE scope_key=NEW.team_id AND remaining>0);
+
+ DELETE FROM agent_catchup
+ WHERE scope_key=COALESCE(NEW.team_id,'__general__') AND remaining<=0;
 END`;
 
 async function ensureSchema(db) {
   let hasTeams = false;
+  let hasCatchupTable = false;
   let hasAgentTeamCol = false;
   let hasReqTeamCol = false;
   let hasSyncModeCol = false;
@@ -301,6 +286,12 @@ async function ensureSchema(db) {
     hasTeams = !!(await db
       .prepare(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='teams'",
+      )
+      .first());
+
+    hasCatchupTable = !!(await db
+      .prepare(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_catchup'",
       )
       .first());
 
@@ -341,9 +332,8 @@ async function ensureSchema(db) {
         String(availRow.sql || "").includes("sync_mode") &&
         String(assignRow.sql || "").includes("team_id") &&
         String(assignRow.sql || "").includes("sync_mode") &&
-        String(assignRow.sql || "").includes("10800000") &&
-        String(assignRow.sql || "").includes("deliveries d WHERE d.agent_id=b.id") &&
-        String(assignRow.sql || "").includes("!=(SELECT COUNT(*)");
+        String(assignRow.sql || "").includes("agent_catchup") &&
+        !String(assignRow.sql || "").includes("!=(SELECT COUNT(*)");
 
       const phoneIdx = await db
         .prepare(
@@ -359,6 +349,7 @@ async function ensureSchema(db) {
 
   if (
     hasTeams &&
+    hasCatchupTable &&
     hasSyncModeCol &&
     hasAgentTeamCol &&
     hasReqTeamCol &&
@@ -398,6 +389,20 @@ async function ensureSchema(db) {
         )
         .run();
     } catch {}
+  }
+
+  if (!hasCatchupTable) {
+    await db
+      .prepare(
+        `CREATE TABLE IF NOT EXISTS agent_catchup (
+          scope_key TEXT NOT NULL,
+          agent_id TEXT NOT NULL,
+          remaining INTEGER NOT NULL DEFAULT 0 CHECK(remaining >= 0),
+          created_at INTEGER NOT NULL DEFAULT 0,
+          PRIMARY KEY (scope_key, agent_id)
+        )`,
+      )
+      .run();
   }
 
   await db
@@ -506,6 +511,7 @@ export function computeQueuePreview({
   reverse = false,
   allAgentsInScope = [],
   todayCounts = new Map(),
+  catchupRows = [],
 }) {
   const cleanBatch = Math.max(1, Number(batchSize) || 1);
   const cleanUsed = Math.max(0, Number(used) || 0);
@@ -532,35 +538,90 @@ export function computeQueuePreview({
     if (c > initialMaxToday) initialMaxToday = c;
   }
 
+  const poolById = new Map(sortedPool.map((a) => [a.id, a]));
   const scopeById = new Map();
   for (const a of allAgentsInScope) scopeById.set(a.id, a);
   for (const a of sortedPool) scopeById.set(a.id, a);
 
-  const simulateOneStep = (curId, curUsed) => {
-    let minC = Infinity;
-    let maxC = -Infinity;
-    for (const a of sortedPool) {
-      const v = counts.get(a.id) || 0;
-      if (v < minC) minC = v;
-      if (v > maxC) maxC = v;
-    }
-    const allEqual = minC === maxC;
-    const activeCursor = curId ? sortedPool.find((a) => a.id === curId) : undefined;
+  const catchupQueue = (catchupRows || [])
+    .filter((c) => Number(c.remaining) > 0 && poolById.has(c.agent_id))
+    .map((c) => ({
+      agent: poolById.get(c.agent_id),
+      remaining: Number(c.remaining),
+      createdAt: Number(c.created_at || 0),
+    }))
+    .sort((a, b) => {
+      if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
+      return reverse
+        ? (b.agent.position - a.agent.position) || String(a.agent.id).localeCompare(String(b.agent.id))
+        : (a.agent.position - b.agent.position) || String(a.agent.id).localeCompare(String(b.agent.id));
+    });
 
-    if (curUsed < cleanBatch && activeCursor && !(curUsed > 0 && allEqual)) {
+  const pruneCatchups = () => {
+    for (let i = catchupQueue.length - 1; i >= 0; i--) {
+      const item = catchupQueue[i];
+      let maxOther = 0;
+      for (const a of sortedPool) {
+        if (a.id !== item.agent.id) {
+          const val = counts.get(a.id) || 0;
+          if (val > maxOther) maxOther = val;
+        }
+      }
+      if (item.remaining <= 0 || (counts.get(item.agent.id) || 0) >= maxOther) {
+        catchupQueue.splice(i, 1);
+      }
+    }
+  };
+
+  pruneCatchups();
+
+  let simCursorId = cursorAgentId || null;
+  let simUsed = cleanUsed;
+
+  const stepOne = () => {
+    pruneCatchups();
+    if (catchupQueue.length > 0) {
+      const head = catchupQueue[0];
+      let maxOther = 0;
+      for (const a of sortedPool) {
+        if (a.id !== head.agent.id) {
+          const val = counts.get(a.id) || 0;
+          if (val > maxOther) maxOther = val;
+        }
+      }
+      const effRem = Math.min(head.remaining, Math.max(0, maxOther - (counts.get(head.agent.id) || 0)));
+      counts.set(head.agent.id, (counts.get(head.agent.id) || 0) + 1);
+      head.remaining -= 1;
+      pruneCatchups();
+      if (catchupQueue.length === 0) {
+        simCursorId = null;
+        simUsed = 0;
+      }
       return {
-        selected: activeCursor,
-        nextCursor: activeCursor.id,
-        nextUsed: curUsed + 1,
-        inBatch: true,
+        selected: head.agent,
+        equalizing: true,
+        remainingBeforeStep: effRem,
+        usedInBatch: Math.max(0, Math.min(cleanBatch, cleanBatch - effRem)),
       };
     }
 
-    const tied = sortedPool.filter((a) => (counts.get(a.id) || 0) === minC);
-    const cursorRef = curId ? scopeById.get(curId) : undefined;
-    let chosen = tied[0];
+    const activeCursor = simCursorId ? poolById.get(simCursorId) : undefined;
+    if (simUsed < cleanBatch && activeCursor) {
+      const usedBefore = simUsed;
+      simUsed = usedBefore + 1;
+      counts.set(activeCursor.id, (counts.get(activeCursor.id) || 0) + 1);
+      return {
+        selected: activeCursor,
+        equalizing: false,
+        remainingBeforeStep: cleanBatch - usedBefore,
+        usedInBatch: usedBefore,
+      };
+    }
+
+    const cursorRef = simCursorId ? scopeById.get(simCursorId) : undefined;
+    let chosen = sortedPool[0];
     if (cursorRef) {
-      const after = tied.find((a) =>
+      const after = sortedPool.find((a) =>
         reverse
           ? a.position < cursorRef.position ||
             (a.position === cursorRef.position &&
@@ -571,36 +632,36 @@ export function computeQueuePreview({
       );
       if (after) chosen = after;
     }
+    simCursorId = chosen.id;
+    simUsed = 1;
+    counts.set(chosen.id, (counts.get(chosen.id) || 0) + 1);
     return {
       selected: chosen,
-      nextCursor: chosen.id,
-      nextUsed: 1,
-      inBatch: false,
+      equalizing: false,
+      remainingBeforeStep: cleanBatch,
+      usedInBatch: 0,
     };
   };
 
-  const firstStep = simulateOneStep(cursorAgentId || null, cleanUsed);
+  const firstStep = stepOne();
   const firstAgent = firstStep.selected;
-  const initialFirstToday = counts.get(firstAgent.id) || 0;
-  const usedInBatch = firstStep.inBatch ? cleanUsed : 0;
+  const initialFirstToday = Number(todayCounts.get(firstAgent.id) || 0);
+  const initialMissing = firstStep.equalizing ? firstStep.remainingBeforeStep : 0;
 
-  let curId = firstStep.nextCursor;
-  let curUsed = firstStep.nextUsed;
-  counts.set(firstAgent.id, initialFirstToday + 1);
   let consecutiveCount = 1;
   let nextCandidate = null;
-
   if (sortedPool.length > 1) {
-    const maxSimSteps = Math.max(cleanBatch, initialMaxToday - initialFirstToday + 1) + 5;
+    const maxSimSteps = cleanBatch * 2 + 10;
     for (let step = 0; step < maxSimSteps && step < 2500; step++) {
-      const nextStep = simulateOneStep(curId, curUsed);
+      const nextStep = stepOne();
       if (nextStep.selected.id !== firstAgent.id) {
-        nextCandidate = nextStep.selected;
+        nextCandidate = {
+          agent: nextStep.selected,
+          equalizing: nextStep.equalizing,
+          missing: nextStep.equalizing ? nextStep.remainingBeforeStep : 0,
+        };
         break;
       }
-      counts.set(firstAgent.id, (counts.get(firstAgent.id) || 0) + 1);
-      curId = nextStep.nextCursor;
-      curUsed = nextStep.nextUsed;
       consecutiveCount++;
     }
   }
@@ -614,22 +675,19 @@ export function computeQueuePreview({
       name: firstAgent.name,
       phone: firstAgent.phone,
       todayCount: initialFirstToday,
-      usedInBatch,
+      usedInBatch: firstStep.usedInBatch,
       batchSize: cleanBatch,
       remainingToSwitch: sortedPool.length > 1 ? consecutiveCount : null,
-      equalizing: initialFirstToday < initialMaxToday,
-      missingToEqualize: Math.max(0, initialMaxToday - initialFirstToday),
+      equalizing: firstStep.equalizing,
+      missingToEqualize: initialMissing,
     },
     nextUp: nextCandidate
       ? {
-          id: nextCandidate.id,
-          name: nextCandidate.name,
-          todayCount: Number(todayCounts.get(nextCandidate.id) || 0),
-          equalizing: Number(todayCounts.get(nextCandidate.id) || 0) < initialMaxToday,
-          missingToEqualize: Math.max(
-            0,
-            initialMaxToday - Number(todayCounts.get(nextCandidate.id) || 0),
-          ),
+          id: nextCandidate.agent.id,
+          name: nextCandidate.agent.name,
+          todayCount: Number(todayCounts.get(nextCandidate.agent.id) || 0),
+          equalizing: nextCandidate.equalizing,
+          missingToEqualize: nextCandidate.missing,
         }
       : null,
   };
@@ -967,6 +1025,7 @@ async function handle({ request, env, params }) {
         sql("DELETE FROM deliveries"),
         sql("DELETE FROM visitors"),
         sql("DELETE FROM route_requests"),
+        sql("DELETE FROM agent_catchup"),
         sql("UPDATE settings SET cursor_agent=NULL, used=0 WHERE id=1"),
         sql("UPDATE teams SET cursor_agent=NULL, used=0"),
       ]);
@@ -1012,10 +1071,20 @@ async function handle({ request, env, params }) {
       if (!Array.isArray(data.teams) || !Array.isArray(data.agents))
         fail("Dados de salvamento inválidos.");
 
+      const today = rangeStart(1, Date.now());
       const existingRes = await db.batch([
         sql("SELECT id, sync_mode FROM teams WHERE deleted=0"),
         sql("SELECT id, position, team_id, active FROM agents WHERE deleted=0 ORDER BY position, id"),
         sql("SELECT COALESCE(MAX(position),0) AS max_pos FROM agents"),
+        sql(
+          `SELECT a.id, COUNT(d.id) AS today_deliveries
+           FROM agents a
+           LEFT JOIN deliveries d ON d.agent_id=a.id AND d.created_at>=?
+           WHERE a.deleted=0
+           GROUP BY a.id`,
+          today,
+        ),
+        sql("SELECT scope_key, agent_id, remaining, created_at FROM agent_catchup"),
       ]);
       const existingTeamMap = new Map(
         (existingRes[0].results || []).map((r) => [r.id, r]),
@@ -1025,6 +1094,12 @@ async function handle({ request, env, params }) {
         (existingRes[1].results || []).map((r) => [r.id, r]),
       );
       let nextPos = Number(existingRes[2].results?.[0]?.max_pos || 0);
+      const todayMap = new Map(
+        (existingRes[3].results || []).map((r) => [r.id, Number(r.today_deliveries || 0)]),
+      );
+      const existingCatchupMap = new Map(
+        (existingRes[4].results || []).map((r) => [`${r.scope_key}:${r.agent_id}`, r]),
+      );
 
       const buildScopeOrder = (rows) => {
         const map = new Map();
@@ -1256,6 +1331,76 @@ async function handle({ request, env, params }) {
         }
       }
 
+      // 6. Rebuild agent_catchup cleanly per scope: new/reactivated/moved agents receive at most 1 batch (or gap)
+      stmts.push(sql("DELETE FROM agent_catchup"));
+      const scopes = [
+        {
+          scopeKey: "__general__",
+          batchSize,
+          pool: normalizedAgents.filter((a) => a.active === 1 && !a.team_id),
+          isMirrored: false,
+        },
+        ...normalizedTeams.map((t) => {
+          const isMirrored = t.sync_mode === "general_same" || t.sync_mode === "general_reverse";
+          return {
+            scopeKey: t.id,
+            batchSize: t.batch_size,
+            pool: t.active
+              ? normalizedAgents.filter((a) => a.active === 1 && (isMirrored ? !a.team_id : a.team_id === t.id))
+              : [],
+            isMirrored,
+          };
+        }),
+      ];
+
+      let catchupSeq = now;
+      for (const sc of scopes) {
+        if (sc.pool.length < 2) continue;
+        for (const a of sc.pool) {
+          const aToday = todayMap.get(a.id) || 0;
+          let maxOther = 0;
+          for (const b of sc.pool) {
+            if (b.id !== a.id) {
+              const bt = todayMap.get(b.id) || 0;
+              if (bt > maxOther) maxOther = bt;
+            }
+          }
+          const gap = Math.max(0, maxOther - aToday);
+          if (gap <= 0) continue;
+
+          const prevA = a.isExisting ? existingAgentMap.get(a.id) : null;
+          const prevScopeKey = prevA
+            ? prevA.team_id || "__general__"
+            : null;
+          const enteredScope =
+            !a.isExisting ||
+            prevA.active === 0 ||
+            (!sc.isMirrored && prevScopeKey !== sc.scopeKey) ||
+            (sc.isMirrored && prevA.team_id !== null);
+          const prevCatchup = existingCatchupMap.get(`${sc.scopeKey}:${a.id}`);
+
+          let remaining = 0;
+          let createdAt = catchupSeq++;
+          if (enteredScope) {
+            remaining = Math.min(gap, sc.batchSize);
+          } else if (prevCatchup && Number(prevCatchup.remaining) > 0) {
+            remaining = Math.min(Number(prevCatchup.remaining), gap, sc.batchSize);
+            createdAt = Number(prevCatchup.created_at || createdAt);
+          }
+          if (remaining > 0) {
+            stmts.push(
+              sql(
+                "INSERT INTO agent_catchup(scope_key,agent_id,remaining,created_at) VALUES(?,?,?,?)",
+                sc.scopeKey,
+                a.id,
+                remaining,
+                createdAt,
+              ),
+            );
+          }
+        }
+      }
+
       await db.batch(stmts);
 
       const savedSnapshot = await db.batch([
@@ -1358,9 +1503,10 @@ async function handle({ request, env, params }) {
       const data = await body(request);
       if (!validID(data.agentId)) fail("Atendente inválido.");
       const prevAgent = await sql(
-        "SELECT team_id FROM agents WHERE id=? AND deleted=0",
+        "SELECT id, team_id, active FROM agents WHERE id=? AND deleted=0",
         data.agentId,
       ).first();
+      if (!prevAgent) fail("Atendente não encontrado.", 404);
       let targetTeamId = null;
       if (data.teamId) {
         if (!validID(data.teamId)) fail("Equipe de destino inválida.");
@@ -1371,12 +1517,15 @@ async function handle({ request, env, params }) {
         if (!foundTeam) fail("Equipe de destino não encontrada.", 404);
         targetTeamId = data.teamId;
       }
+      const now = Date.now();
+      const today = rangeStart(1, now);
       const resetStmts = [
         sql(
           "UPDATE agents SET team_id=? WHERE id=? AND deleted=0",
           targetTeamId,
           data.agentId,
         ),
+        sql("DELETE FROM agent_catchup WHERE agent_id=?", data.agentId),
       ];
       if (!prevAgent?.team_id || !targetTeamId) {
         resetStmts.push(sql("UPDATE settings SET cursor_agent=NULL, used=0 WHERE id=1"));
@@ -1390,6 +1539,72 @@ async function handle({ request, env, params }) {
       if (targetTeamId && targetTeamId !== prevAgent?.team_id) {
         resetStmts.push(sql("UPDATE teams SET cursor_agent=NULL, used=0 WHERE id=?", targetTeamId));
       }
+
+      if (prevAgent.active === 1 && (prevAgent.team_id || null) !== targetTeamId) {
+        const meta = await db.batch([
+          sql("SELECT batch_size FROM settings WHERE id=1"),
+          sql("SELECT id, batch_size, sync_mode, active FROM teams WHERE deleted=0"),
+          sql(
+            `SELECT a.id, a.team_id, COUNT(d.id) AS today_deliveries
+             FROM agents a
+             LEFT JOIN deliveries d ON d.agent_id=a.id AND d.created_at>=?
+             WHERE a.deleted=0 AND a.active=1
+             GROUP BY a.id`,
+            today,
+          ),
+        ]);
+        const generalBatch = Number(meta[0].results?.[0]?.batch_size || 1);
+        const teamsList = meta[1].results || [];
+        const activeRows = meta[2].results || [];
+        const agentRow = activeRows.find((r) => r.id === data.agentId);
+        const aToday = Number(agentRow?.today_deliveries || 0);
+        const maxInScope = (tId) =>
+          activeRows
+            .filter((r) => r.id !== data.agentId && (r.team_id || null) === tId)
+            .reduce((m, r) => Math.max(m, Number(r.today_deliveries || 0)), 0);
+
+        if (!targetTeamId) {
+          const gap = Math.max(0, maxInScope(null) - aToday);
+          if (gap > 0) {
+            resetStmts.push(
+              sql(
+                "INSERT INTO agent_catchup(scope_key,agent_id,remaining,created_at) VALUES('__general__',?,?,?)",
+                data.agentId,
+                Math.min(gap, generalBatch),
+                now,
+              ),
+            );
+            for (const t of teamsList) {
+              if (t.active && (t.sync_mode === "general_same" || t.sync_mode === "general_reverse")) {
+                resetStmts.push(
+                  sql(
+                    "INSERT INTO agent_catchup(scope_key,agent_id,remaining,created_at) VALUES(?,?,?,?)",
+                    t.id,
+                    data.agentId,
+                    Math.min(gap, Number(t.batch_size || 1)),
+                    now,
+                  ),
+                );
+              }
+            }
+          }
+        } else {
+          const tObj = teamsList.find((t) => t.id === targetTeamId);
+          const gap = Math.max(0, maxInScope(targetTeamId) - aToday);
+          if (tObj && tObj.active && gap > 0) {
+            resetStmts.push(
+              sql(
+                "INSERT INTO agent_catchup(scope_key,agent_id,remaining,created_at) VALUES(?,?,?,?)",
+                targetTeamId,
+                data.agentId,
+                Math.min(gap, Number(tObj.batch_size || 1)),
+                now,
+              ),
+            );
+          }
+        }
+      }
+
       await db.batch(resetStmts);
       return json({ ok: true });
     }
@@ -1409,10 +1624,31 @@ async function handle({ request, env, params }) {
         if (!foundTeam) fail("Equipe não encontrada.", 404);
         teamId = data.team_id;
       }
+      const newId = uuid();
+      const now = Date.now();
+      const today = rangeStart(1, now);
+      const meta = await db.batch([
+        sql("SELECT batch_size FROM settings WHERE id=1"),
+        sql("SELECT id, batch_size, sync_mode, active FROM teams WHERE deleted=0"),
+        sql(
+          `SELECT COALESCE(MAX(cnt), 0) AS max_today FROM (
+             SELECT COUNT(d.id) AS cnt
+             FROM agents a
+             LEFT JOIN deliveries d ON d.agent_id=a.id AND d.created_at>=?
+             WHERE a.deleted=0 AND a.active=1 AND ${teamId ? "a.team_id=?" : "a.team_id IS NULL"}
+             GROUP BY a.id
+           )`,
+          ...(teamId ? [today, teamId] : [today]),
+        ),
+      ]);
+      const generalBatch = Number(meta[0].results?.[0]?.batch_size || 1);
+      const teamsList = meta[1].results || [];
+      const maxToday = Number(meta[2].results?.[0]?.max_today || 0);
+
       const addStmts = [
         sql(
           "INSERT INTO agents(id,name,phone,position,team_id) SELECT ?,?,?,COALESCE(MAX(position),0)+1,? FROM agents",
-          uuid(),
+          newId,
           name,
           phone,
           teamId,
@@ -1423,8 +1659,43 @@ async function handle({ request, env, params }) {
         addStmts.push(
           sql("UPDATE teams SET cursor_agent=NULL, used=0 WHERE deleted=0 AND sync_mode IN ('general_same','general_reverse')"),
         );
+        if (maxToday > 0) {
+          addStmts.push(
+            sql(
+              "INSERT INTO agent_catchup(scope_key,agent_id,remaining,created_at) VALUES('__general__',?,?,?)",
+              newId,
+              Math.min(maxToday, generalBatch),
+              now,
+            ),
+          );
+          for (const t of teamsList) {
+            if (t.active && (t.sync_mode === "general_same" || t.sync_mode === "general_reverse")) {
+              addStmts.push(
+                sql(
+                  "INSERT INTO agent_catchup(scope_key,agent_id,remaining,created_at) VALUES(?,?,?,?)",
+                  t.id,
+                  newId,
+                  Math.min(maxToday, Number(t.batch_size || 1)),
+                  now,
+                ),
+              );
+            }
+          }
+        }
       } else {
         addStmts.push(sql("UPDATE teams SET cursor_agent=NULL, used=0 WHERE id=?", teamId));
+        const tObj = teamsList.find((t) => t.id === teamId);
+        if (tObj && tObj.active && maxToday > 0) {
+          addStmts.push(
+            sql(
+              "INSERT INTO agent_catchup(scope_key,agent_id,remaining,created_at) VALUES(?,?,?,?)",
+              teamId,
+              newId,
+              Math.min(maxToday, Number(tObj.batch_size || 1)),
+              now,
+            ),
+          );
+        }
       }
       await db.batch(addStmts);
       return json({ ok: true });
@@ -1436,7 +1707,10 @@ async function handle({ request, env, params }) {
       const id = path.split("/").pop();
       if (!validID(id)) fail("Atendente inválido.");
       if (request.method === "DELETE") {
-        await sql("UPDATE agents SET deleted=1,active=0 WHERE id=?", id).run();
+        await db.batch([
+          sql("UPDATE agents SET deleted=1,active=0 WHERE id=?", id),
+          sql("DELETE FROM agent_catchup WHERE agent_id=?", id),
+        ]);
         return json({ ok: true });
       }
       const data = await body(request),
@@ -1480,6 +1754,9 @@ async function handle({ request, env, params }) {
           id,
         ),
       ];
+      if (!nextActive) {
+        putStmts.push(sql("DELETE FROM agent_catchup WHERE agent_id=?", id));
+      }
       if (routingChanged) {
         if (!prev.team_id || !teamId) {
           putStmts.push(sql("UPDATE settings SET cursor_agent=NULL, used=0 WHERE id=1"));
@@ -1492,6 +1769,77 @@ async function handle({ request, env, params }) {
         }
         if (teamId && teamId !== prev.team_id) {
           putStmts.push(sql("UPDATE teams SET cursor_agent=NULL, used=0 WHERE id=?", teamId));
+        }
+      }
+      const enteredScope =
+        prev &&
+        nextActive === 1 &&
+        (prev.active === 0 || (prev.team_id || null) !== teamId);
+      if (enteredScope) {
+        const now = Date.now();
+        const today = rangeStart(1, now);
+        const meta = await db.batch([
+          sql("SELECT batch_size FROM settings WHERE id=1"),
+          sql("SELECT id, batch_size, sync_mode, active FROM teams WHERE deleted=0"),
+          sql(
+            "SELECT COUNT(*) AS cnt FROM deliveries WHERE agent_id=? AND created_at>=?",
+            id,
+            today,
+          ),
+          sql(
+            `SELECT COALESCE(MAX(cnt), 0) AS max_today FROM (
+               SELECT COUNT(d.id) AS cnt
+               FROM agents a
+               LEFT JOIN deliveries d ON d.agent_id=a.id AND d.created_at>=?
+               WHERE a.deleted=0 AND a.active=1 AND a.id!=? AND ${teamId ? "a.team_id=?" : "a.team_id IS NULL"}
+               GROUP BY a.id
+             )`,
+            ...(teamId ? [today, id, teamId] : [today, id]),
+          ),
+        ]);
+        const generalBatch = Number(meta[0].results?.[0]?.batch_size || 1);
+        const teamsList = meta[1].results || [];
+        const aToday = Number(meta[2].results?.[0]?.cnt || 0);
+        const maxOther = Number(meta[3].results?.[0]?.max_today || 0);
+        const gap = Math.max(0, maxOther - aToday);
+        putStmts.push(sql("DELETE FROM agent_catchup WHERE agent_id=?", id));
+        if (gap > 0) {
+          if (!teamId) {
+            putStmts.push(
+              sql(
+                "INSERT INTO agent_catchup(scope_key,agent_id,remaining,created_at) VALUES('__general__',?,?,?)",
+                id,
+                Math.min(gap, generalBatch),
+                now,
+              ),
+            );
+            for (const t of teamsList) {
+              if (t.active && (t.sync_mode === "general_same" || t.sync_mode === "general_reverse")) {
+                putStmts.push(
+                  sql(
+                    "INSERT INTO agent_catchup(scope_key,agent_id,remaining,created_at) VALUES(?,?,?,?)",
+                    t.id,
+                    id,
+                    Math.min(gap, Number(t.batch_size || 1)),
+                    now,
+                  ),
+                );
+              }
+            }
+          } else {
+            const tObj = teamsList.find((t) => t.id === teamId);
+            if (tObj && tObj.active) {
+              putStmts.push(
+                sql(
+                  "INSERT INTO agent_catchup(scope_key,agent_id,remaining,created_at) VALUES(?,?,?,?)",
+                  teamId,
+                  id,
+                  Math.min(gap, Number(tObj.batch_size || 1)),
+                  now,
+                ),
+              );
+            }
+          }
         }
       }
       await db.batch(putStmts);
@@ -1540,14 +1888,26 @@ async function handle({ request, env, params }) {
           today,
         ),
       );
+      statements.push(
+        sql(
+          "SELECT scope_key, agent_id, remaining, created_at FROM agent_catchup WHERE remaining>0 ORDER BY created_at ASC",
+        ),
+      );
       const res = await db.batch(statements);
       const settingsRow = res[7].results[0] || { batch_size: 1, cursor_agent: null, used: 0 };
       const teamRows = res[8].results || [];
       const liveAgents = res[9].results || [];
+      const catchupAll = res[10].results || [];
 
       const todayMap = new Map();
       for (const a of liveAgents) {
         todayMap.set(a.id, Number(a.today_deliveries || 0));
+      }
+
+      const catchupByScope = new Map();
+      for (const c of catchupAll) {
+        if (!catchupByScope.has(c.scope_key)) catchupByScope.set(c.scope_key, []);
+        catchupByScope.get(c.scope_key).push(c);
       }
 
       const generalScope = liveAgents.filter((a) => !a.team_id);
@@ -1560,6 +1920,7 @@ async function handle({ request, env, params }) {
         reverse: false,
         allAgentsInScope: generalScope,
         todayCounts: todayMap,
+        catchupRows: catchupByScope.get("__general__") || [],
       });
 
       const teamQueues = {};
@@ -1578,6 +1939,7 @@ async function handle({ request, env, params }) {
           reverse: sm === "general_reverse",
           allAgentsInScope: scope,
           todayCounts: todayMap,
+          catchupRows: catchupByScope.get(t.id) || [],
         });
       }
 
