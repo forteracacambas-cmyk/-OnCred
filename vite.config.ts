@@ -262,18 +262,24 @@ function devApiPlugin() {
       });
     });
 
-  return {
-    name: 'dev-api-middleware',
-    configureServer(server: any) {
-      server.middlewares.use(async (req: any, res: any, next: any) => {
+  const apiMiddleware = async (req: any, res: any, next: any) => {
         if (!req.url?.startsWith('/api/')) return next();
         const url = new URL(req.url, 'http://localhost');
         const pathname = url.pathname.replace(/\/$/, '');
+        const isHttps =
+          req.headers?.['x-forwarded-proto'] === 'https' ||
+          String(req.headers?.origin || '').startsWith('https://');
+        const adminCookieFlags = isHttps
+          ? '; HttpOnly; Secure; SameSite=None; Partitioned'
+          : '; HttpOnly; SameSite=Lax';
 
         res.setHeader('Content-Type', 'application/json');
 
         if (pathname === '/api/visitor') {
-          res.setHeader('Set-Cookie', 'oncred_visitor=00000000-0000-0000-0000-000000000001; Path=/; SameSite=Lax');
+          res.setHeader(
+            'Set-Cookie',
+            `oncred_visitor=00000000-0000-0000-0000-000000000001; Path=/; SameSite=Lax${isHttps ? '; Secure' : ''}`,
+          );
           res.end(JSON.stringify({ ready: true }));
           return;
         }
@@ -415,7 +421,10 @@ function devApiPlugin() {
           state.devSessions = (state.devSessions || []).filter((s: any) => s.expires > Date.now());
           state.devSessions.push({ token, expires });
           persistState();
-          res.setHeader('Set-Cookie', `oncred_admin=${token}; Path=/api/admin; HttpOnly; SameSite=Lax; Max-Age=${Math.floor(DEV_SESSION_TTL_MS / 1000)}`);
+          res.setHeader(
+            'Set-Cookie',
+            `oncred_admin=${token}; Path=/api/admin${adminCookieFlags}; Max-Age=${Math.floor(DEV_SESSION_TTL_MS / 1000)}`,
+          );
           res.end(JSON.stringify({ token, expires }));
           return;
         }
@@ -439,7 +448,7 @@ function devApiPlugin() {
           const tok = bearer || extractAdminCookie(req);
           state.devSessions = (state.devSessions || []).filter((s: any) => s.token !== tok);
           persistState();
-          res.setHeader('Set-Cookie', 'oncred_admin=; Path=/api/admin; HttpOnly; SameSite=Lax; Max-Age=0');
+          res.setHeader('Set-Cookie', `oncred_admin=; Path=/api/admin${adminCookieFlags}; Max-Age=0`);
           res.end(JSON.stringify({ ok: true }));
           return;
         }
@@ -842,7 +851,15 @@ function devApiPlugin() {
         }
 
         next();
-      });
+  };
+
+  return {
+    name: 'dev-api-middleware',
+    configureServer(server: any) {
+      server.middlewares.use(apiMiddleware);
+    },
+    configurePreviewServer(server: any) {
+      server.middlewares.use(apiMiddleware);
     },
   };
 }
@@ -860,11 +877,15 @@ export default defineConfig(() => {
       outDir: 'dist',
     },
     server: {
+      allowedHosts: true as const,
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
       // Do not modify—file watching is disabled to prevent flickering during agent edits.
       hmr: process.env.DISABLE_HMR !== 'true',
       // Disable file watching when DISABLE_HMR is true to save CPU during agent edits.
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
+    },
+    preview: {
+      allowedHosts: true as const,
     },
   };
 });

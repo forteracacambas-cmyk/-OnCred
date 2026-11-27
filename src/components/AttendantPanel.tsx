@@ -247,6 +247,7 @@ export default function AttendantPanel() {
     [dragOverCard, setDragOverCard] = useState<{ id: string; placement: "before" | "after" } | null>(null);
 
   const refreshInFlightRef = useRef(false);
+  const skipNextStatsEffectRef = useRef(false);
   const tokenRef = useRef(token);
   tokenRef.current = token;
 
@@ -403,27 +404,28 @@ export default function AttendantPanel() {
 
   useEffect(() => {
     let alive = true;
-    api("admin/config", "GET")
-      .then(async (config) => {
+    (async () => {
+      try {
+        const config = await api("admin/config", "GET");
         if (!alive) return;
-        applyServerSnapshot(config);
-        setAuthed(true);
         const totals = await api("admin/stats?period=" + period, "GET");
         if (!alive) return;
+        applyServerSnapshot(config);
         setStats(totals);
         setLastStatsAt(Date.now());
+        skipNextStatsEffectRef.current = true;
+        setAuthed(true);
         verifyTeamsOnServer(config.teams || []).catch(() => {});
-      })
-      .catch((e: any) => {
+      } catch (e: any) {
         if (!alive) return;
-        if (e?.status && e.status !== 401) {
+        if (e?.status !== 401 && e?.message) {
           setError(e.message || "Erro ao verificar sessão.");
         }
         setAuthed(false);
-      })
-      .finally(() => {
+      } finally {
         if (alive) setAuthChecked(true);
-      });
+      }
+    })();
     return () => {
       alive = false;
     };
@@ -441,6 +443,10 @@ export default function AttendantPanel() {
 
   useEffect(() => {
     if (!authed) return;
+    if (skipNextStatsEffectRef.current) {
+      skipNextStatsEffectRef.current = false;
+      return;
+    }
     let alive = true;
     request("stats?period=" + period)
       .then((s) => {
@@ -1469,17 +1475,17 @@ export default function AttendantPanel() {
               e.preventDefault();
               run(async () => {
                 const data = await api("login", "POST", { password });
+                const nextToken = data.token || "";
+                const config = await api("admin/config", "GET", undefined, nextToken || undefined);
+                const totals = await api("admin/stats?period=" + period, "GET", undefined, nextToken || undefined);
                 setPassword("");
-                tokenRef.current = data.token || "";
-                setToken(data.token || "");
-                setAuthed(true);
-                const [config, totals] = await Promise.all([
-                  api("admin/config", "GET", undefined, data.token || undefined),
-                  api("admin/stats?period=" + period, "GET", undefined, data.token || undefined),
-                ]);
+                tokenRef.current = nextToken;
+                setToken(nextToken);
                 applyServerSnapshot(config);
                 setStats(totals);
                 setLastStatsAt(Date.now());
+                skipNextStatsEffectRef.current = true;
+                setAuthed(true);
                 verifyTeamsOnServer(config.teams || []).catch(() => {});
               });
             }}

@@ -982,7 +982,7 @@ async function handle({ request, env, params }) {
       ]);
       return json(
         {
-          batchSize: res[0].results[0].batch_size,
+          batchSize: res[0].results[0]?.batch_size ?? 1,
           agents: res[1].results,
           teams: res[2].results,
         },
@@ -1589,7 +1589,7 @@ async function handle({ request, env, params }) {
       return json(
         {
           totals: Object.fromEntries(
-            periods.map((item, i) => [item[0], res[i].results[0].unique_clients]),
+            periods.map((item, i) => [item[0], res[i].results[0]?.unique_clients ?? 0]),
           ),
           agents: agentsWithToday,
           queues: {
